@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+venv/
+env/
+.env
+
+# Build
+build/
+dist/
+*.spec
+
+# Reports & Logs
+*.log
+energy-report.html
+battery-report.html
+
+# IDE
+.vscode/
+.idea/
