@@ -6,8 +6,9 @@ Master Sentinal is a modern, unified system diagnostics tool for Windows. It pro
 
 You do **not** need to install Python or any coding tools.
 
-1.  **Download** the `Master Sentinal.exe` file.
-2.  **Move** it to any folder on your computer (e.g., Desktop or Documents).
+1.  **Go to the [Releases](../../releases) page** of this repository.
+2.  **Download** the latest `Master Sentinal.exe` from the "Assets" section.
+3.  **Move** it to any folder on your computer (e.g., Desktop or Documents).
 3.  **Double-click** `Master Sentinal.exe` to launch.
     *   *Note: The app requires Administrator privileges to run diagnostics, so click "Yes" when Windows asks.*
 
