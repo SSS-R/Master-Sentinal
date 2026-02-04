@@ -10,6 +10,29 @@ class FullScanDiagnostic:
         except:
             return False
 
+    def _parse_friendly_error(self, output):
+        """Translates cryptic Windows error codes to friendly text."""
+        out_lower = output.lower()
+        if "0x800f081f" in out_lower:
+            return "Error: Source Files Missing (Windows Update Issue)"
+        if "0x800f0906" in out_lower:
+            return "Error: Cannot Download Source Files"
+        if "access is denied" in out_lower or "error: 5" in out_lower:
+            return "Error: Access Denied (Run as Admin)" 
+        if "error: 87" in out_lower:
+             return "Error: Invalid Parameter"
+        if "0x10d2" in out_lower or "no battery" in out_lower:
+             return "Not a Laptop (No Battery Detected)"
+        if "unable to perform operation" in out_lower and "library" in out_lower:
+             return "Not a Laptop (No Battery)"
+        
+        # Fallback: Find "Error:" line or show last bit
+        for line in output.splitlines():
+             if "error:" in line.lower():
+                 return line.strip()
+                 
+        return f"Failed: {output.strip()[-50:]}..."
+
     def run_sfc(self):
         """Runs System File Checker. Returns tuple (success, output)."""
         if not self.is_admin():
@@ -18,18 +41,15 @@ class FullScanDiagnostic:
         try:
             result = subprocess.run(['sfc', '/scannow'], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
             if result.returncode == 0:
-                # Need to scan output for "did not find any integrity violations" or "successfully repaired"
                 if "Windows Resource Protection did not find any integrity violations" in result.stdout:
                     return True, "No Integrity Violations"
                 elif "successfully repaired" in result.stdout:
                     return True, "Violations Found & Repaired"
                 else: 
-                    # It might be 0 but say something else?
                     return True, "Scan Complete"
             else:
-                 # Standard error message from sfc usually in stdout
-                 err = result.stdout or result.stderr
-                 return False, f"Error: {err.strip()[:100]}..." # Truncate for UI
+                 output = result.stdout + (result.stderr or "")
+                 return False, self._parse_friendly_error(output)
         except Exception as e:
             return False, str(e)
 
@@ -44,7 +64,8 @@ class FullScanDiagnostic:
             if result.returncode == 0:
                 return True, "Restore Operation Successful"
             else:
-                return False, f"Failed: {result.stdout.strip()[:100]}..."
+                output = result.stdout + (result.stderr or "")
+                return False, self._parse_friendly_error(output)
         except Exception as e:
             return False, str(e)
 
@@ -57,12 +78,12 @@ class FullScanDiagnostic:
             cmd = ['chkdsk', 'C:', '/scan']
             result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
             if result.returncode == 0:
-                # "Windows has scanned the file system and found no problems."
                 if "found no problems" in result.stdout:
                     return True, "No Problems Found"
                 return True, "Scan Complete"
             else:
-                return False, f"Failed: {result.stdout.strip()[:100]}..."
+                output = result.stdout + (result.stderr or "")
+                return False, self._parse_friendly_error(output)
         except Exception as e:
             return False, str(e)
             
@@ -79,7 +100,8 @@ class FullScanDiagnostic:
                     return True, "No Problems Found"
                 return True, "Quick Scan Complete"
             else:
-                return False, f"Failed: {result.stdout.strip()[:100]}..."
+                output = result.stdout + (result.stderr or "")
+                return False, self._parse_friendly_error(output)
         except Exception as e:
             return False, str(e)
 
@@ -110,7 +132,8 @@ class FullScanDiagnostic:
             if result.returncode == 0:
                 return True, f"Report generated at {report_path}"
             else:
-                return False, f"Failed: {result.stdout.strip()[:100]}..."
+                output = result.stdout + (result.stderr or "")
+                return False, self._parse_friendly_error(output)
         except Exception as e:
             return False, str(e)
 
@@ -135,14 +158,7 @@ class FullScanDiagnostic:
             if result.returncode == 0:
                 return True, f"Report generated at {report_path}"
             else:
-                # Check for "No battery" specific errors
-                # Common error: "Unable to perform operation. An unexpected error (0x10d2) has occurred: The library, drive, or media pool is empty."
-                # Or "The system cannot find the file specified."
-                # Or just check if string contains "battery"
-                if "Unable to perform operation" in output or "0x10d2" in output or "no battery" in output.lower():
-                    return False, "Not a Laptop (No Battery Detected)"
-                
-                return False, f"Failed: {output.strip()[:50]}..."
+                return False, self._parse_friendly_error(output)
         except Exception as e:
             return False, str(e)
 
