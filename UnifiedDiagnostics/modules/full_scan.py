@@ -48,7 +48,71 @@ class FullScanDiagnostic:
         except Exception as e:
             return False, str(e)
 
-    # ... (other methods similar, improving messages) ...
+    def run_chkdsk_scan(self):
+        """Runs CHKDSK in scan-only mode (online). Returns tuple (success, output)."""
+        if not self.is_admin():
+            return False, "Administrator privileges required."
+        
+        try:
+            cmd = ['chkdsk', 'C:', '/scan']
+            result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            if result.returncode == 0:
+                # "Windows has scanned the file system and found no problems."
+                if "found no problems" in result.stdout:
+                    return True, "No Problems Found"
+                return True, "Scan Complete"
+            else:
+                return False, f"Failed: {result.stdout.strip()[:100]}..."
+        except Exception as e:
+            return False, str(e)
+            
+    def run_chkdsk_quick(self):
+        """Runs CHKDSK in perf/quick mode. Returns tuple (success, output)."""
+        if not self.is_admin():
+            return False, "Administrator privileges required."
+        
+        try:
+            cmd = ['chkdsk', 'C:', '/scan', '/perf']
+            result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            if result.returncode == 0:
+                if "found no problems" in result.stdout:
+                    return True, "No Problems Found"
+                return True, "Quick Scan Complete"
+            else:
+                return False, f"Failed: {result.stdout.strip()[:100]}..."
+        except Exception as e:
+            return False, str(e)
+
+    def run_memory_diag(self):
+        """Launches Windows Memory Diagnostic scheduler. Returns tuple (success, output)."""
+        try:
+            subprocess.Popen(['mdsched.exe'])
+            return True, "Memory Diagnostic Launched"
+        except Exception as e:
+            return False, str(e)
+
+    def run_power_diag(self):
+        """Runs Power Efficiency Diagnostics. RETURNS PATH to report or error."""
+        if not self.is_admin():
+            return False, "Administrator privileges required."
+        
+        try:
+            report_path = os.path.abspath("energy-report.html")
+            cmd = ['powercfg', '/energy', '/output', report_path, '/duration', '15']
+            
+            if os.path.exists(report_path):
+                try:
+                    os.remove(report_path)
+                except:
+                    pass
+
+            result = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            if result.returncode == 0:
+                return True, f"Report generated at {report_path}"
+            else:
+                return False, f"Failed: {result.stdout.strip()[:100]}..."
+        except Exception as e:
+            return False, str(e)
 
     def run_battery_report(self):
         """Runs Battery Report (Laptop). Returns path."""
