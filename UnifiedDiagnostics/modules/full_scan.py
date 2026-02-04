@@ -21,6 +21,8 @@ class FullScanDiagnostic:
             return "Error: Access Denied (Run as Admin)" 
         if "error: 87" in out_lower:
              return "Error: Invalid Parameter"
+        if "error: 3017" in out_lower or "3017" in out_lower:
+             return "Error: PENDING REBOOT (Restart PC & Try Again)"
         if "0x10d2" in out_lower or "no battery" in out_lower:
              return "Not a Laptop (No Battery Detected)"
         if "unable to perform operation" in out_lower and "library" in out_lower:
@@ -30,8 +32,13 @@ class FullScanDiagnostic:
         for line in output.splitlines():
              if "error:" in line.lower():
                  return line.strip()
+        
+        # New Fallback: Return the last meaningful line, not just random chars
+        lines = [l.strip() for l in output.splitlines() if l.strip()]
+        if lines:
+            return f"Failed: {lines[-1][:60]}"
                  
-        return f"Failed: {output.strip()[-50:]}..."
+        return "Failed: Unknown Error"
 
     def run_sfc(self):
         """Runs System File Checker. Returns tuple (success, output)."""
