@@ -19,7 +19,7 @@ PyInstaller.__main__.run([
     '--name=Master Sentinal',
     '--noconfirm',
     '--windowed',
-    '--onedir',
+    '--onefile',
     f'--add-data={ctk_path};customtkinter',
     '--icon=NONE',
     '--clean',

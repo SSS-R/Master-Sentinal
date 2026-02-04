@@ -1,47 +1,48 @@
 # Master Sentinal
 
-Master Sentinal is a modern, unified system diagnostics tool built with Python and CustomTkinter. It provides real-time monitoring of CPU, RAM, GPU, and Storage, along with a comprehensive "Full Scan" feature for system health.
+Master Sentinal is a modern, unified system diagnostics tool for Windows. It provides real-time monitoring and a comprehensive "Full Scan" health check.
 
-## Features
+## 🚀 How to Download & Run (Easy Way)
 
-- **Dashboard**: High-level overview of system resources.
-- **Real-time Monitoring**:
-  - Detailed per-core CPU usage.
-  - RAM statistics.
-  - GPU detection and monitoring.
-  - Disk usage and SMART health status.
-- **Full Scan**: One-click execution of 8 system diagnostic tools:
-  - System File Checker (SFC)
-  - DISM Image Repair
-  - Disk Check (Scan & Perf)
-  - Power Efficiency Report
-  - Battery Health Report
-  - Driver Verifier
-  - Windows Memory Diagnostic
+You do **not** need to install Python or any coding tools.
 
-## Installation
+1.  **Download** the `Master Sentinal.exe` file.
+2.  **Move** it to any folder on your computer (e.g., Desktop or Documents).
+3.  **Double-click** `Master Sentinal.exe` to launch.
+    *   *Note: The app requires Administrator privileges to run diagnostics, so click "Yes" when Windows asks.*
 
-1. Clone the repository.
-2. Install dependencies:
-   ```bash
-   pip install -r UnifiedDiagnostics/requirements.txt
-   ```
+That's it!
 
-## Running from Source
+---
 
-**Note**: The application requires Administrator privileges to run diagnostics.
+## 🛠️ For Developers
 
+If you want to modify the code or run from source:
+
+### Prerequisites
+- Python 3.10 or higher
+- Git
+
+### Installation
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/YourUsername/MasterSentinal.git
+    cd MasterSentinal
+    ```
+2.  Install dependencies:
+    ```bash
+    pip install -r UnifiedDiagnostics/requirements.txt
+    ```
+
+### Running Source Code
 ```bash
-# Run as Administrator
+# Run as Administrator for full functionality
 python UnifiedDiagnostics/main.py
 ```
 
-## Building Executable
-
-To build a standalone `.exe` that automatically requests Admin privileges:
-
+### Building the Exe
+To recreate the single-file executable yourself:
 ```bash
 python build_app.py
 ```
-
-The output will be in `dist/Master Sentinal/Master Sentinal.exe`.
+The new file will appear in the `dist/` folder.
