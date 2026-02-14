@@ -1,3 +1,5 @@
+"""Build script for Master Sentinal — creates a single-file .exe via PyInstaller."""
+
 import PyInstaller.__main__
 import customtkinter
 import os
@@ -21,6 +23,8 @@ PyInstaller.__main__.run([
     '--windowed',
     '--onefile',
     f'--add-data={ctk_path};customtkinter',
+    # TODO: Replace --icon=NONE with a proper .ico file when one is available.
+    #       e.g. '--icon=assets/icon.ico'
     '--icon=NONE',
     '--clean',
     '--uac-admin',

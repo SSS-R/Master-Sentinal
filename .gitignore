@@ -18,6 +18,13 @@ dist/
 energy-report.html
 battery-report.html
 
+# Exports
+*.csv
+
 # IDE
 .vscode/
 .idea/
+
+# Tests
+tests/__pycache__/
+.pytest_cache/

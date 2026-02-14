@@ -1,16 +1,24 @@
-import wmi
-import pythoncom
+"""Motherboard and BIOS diagnostics via WMI and platform."""
+
+from __future__ import annotations
+
 import platform
 
+import pythoncom
+import wmi
+
+
 class BoardDiagnostic:
-    def get_board_info(self):
-        """Returns motherboard and BIOS info."""
-        info = {
+    """Gathers motherboard, BIOS, and OS platform information."""
+
+    def get_board_info(self) -> dict[str, str]:
+        """Return a dictionary of motherboard, BIOS, and OS info."""
+        info: dict[str, str] = {
             'System': platform.system(),
             'Node Name': platform.node(),
             'Release': platform.release(),
             'Version': platform.version(),
-            'Machine': platform.machine()
+            'Machine': platform.machine(),
         }
         try:
             pythoncom.CoInitialize()
@@ -20,7 +28,7 @@ class BoardDiagnostic:
                 info['Product'] = board.Product
                 info['SerialNumber'] = board.SerialNumber
                 break
-            
+
             for bios in c.Win32_BIOS():
                 info['BIOS Version'] = bios.SMBIOSBIOSVersion
                 break
