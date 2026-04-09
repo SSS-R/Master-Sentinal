@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import csv
-import os
 import threading
-import time
 from datetime import datetime
 from tkinter import messagebox, filedialog
 from typing import Any, Callable
@@ -26,6 +24,8 @@ from modules.disk_diag import DiskDiagnostic
 from modules.full_scan import FullScanDiagnostic
 from modules.gpu_diag import GPUDiagnostic
 from modules.ram_diag import RAMDiagnostic
+from services.full_scan_service import FullScanService, ScanTask
+from services.live_snapshot import DiagnosticSnapshot, LiveSnapshotCollector
 from ui.components import InfoRow, MetricCard, SectionFrame
 
 
@@ -94,12 +94,20 @@ class App(ctk.CTk):
         self.disk_mod = DiskDiagnostic()
         self.board_mod = BoardDiagnostic()
         self.full_scan_mod = FullScanDiagnostic()
+        self.snapshot_collector = LiveSnapshotCollector(
+            cpu_mod=self.cpu_mod,
+            ram_mod=self.ram_mod,
+            gpu_mod=self.gpu_mod,
+            disk_mod=self.disk_mod,
+        )
+        self.scan_service = FullScanService(self.full_scan_mod)
 
         # Dashboard string vars
         self.cpu_usage_var = ctk.StringVar(value="0%")
         self.ram_usage_var = ctk.StringVar(value="0%")
         self.gpu_count_var = ctk.StringVar(value="Searching...")
         self.disk_count_var = ctk.StringVar(value="Scanning...")
+        self.health_summary_var = ctk.StringVar(value="Analyzing live system health...")
 
         # Build each tab's UI
         self.setup_dashboard()
@@ -168,6 +176,22 @@ class App(ctk.CTk):
         )
         export_btn.pack(fill="x", padx=20, pady=(0, 10))
 
+        self.health_frame = SectionFrame(df, "Health Overview")
+        self.health_frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        self.health_summary_label = ctk.CTkLabel(
+            self.health_frame.content,
+            textvariable=self.health_summary_var,
+            font=("Roboto", 16, "bold"),
+            anchor="w",
+            justify="left",
+        )
+        self.health_summary_label.pack(fill="x", pady=(0, 8))
+
+        self.health_findings_container = ctk.CTkFrame(self.health_frame.content, fg_color="transparent")
+        self.health_findings_container.pack(fill="x")
+        self.health_finding_labels: list[ctk.CTkLabel] = []
+
     def setup_cpu_ui(self) -> None:
         """Build static CPU info and per-thread progress bars."""
         cf = self.frames["CPU"]
@@ -233,20 +257,32 @@ class App(ctk.CTk):
         title.pack(anchor="w", pady=(0, 20))
 
         self.start_scan_btn = ctk.CTkButton(
-            self.fs_container, text="Start Full Scan",
+            self.fs_container, text="Start Health Scan",
             command=self.start_full_scan, font=("Roboto", 16), height=40,
         )
         self.start_scan_btn.pack(fill="x", pady=(0, 20))
 
-        self.scan_rows: dict[str, ctk.CTkLabel] = {}
-        self.check_list = self.full_scan_mod.get_full_scan_list()
+        info_label = ctk.CTkLabel(
+            self.fs_container,
+            text="Routine health checks run together. Riskier tools are listed separately below.",
+            text_color="gray70",
+            anchor="w",
+            justify="left",
+        )
+        info_label.pack(fill="x", pady=(0, 15))
 
-        for name, _func, _reboot in self.check_list:
-            row = ctk.CTkFrame(self.fs_container)
+        routine_section = SectionFrame(self.fs_container, "Routine Health Checks")
+        routine_section.pack(fill="x", pady=(0, 20))
+
+        self.scan_rows: dict[str, ctk.CTkLabel] = {}
+        self.check_list = self.scan_service.get_routine_tasks()
+
+        for task in self.check_list:
+            row = ctk.CTkFrame(routine_section.content)
             row.pack(fill="x", pady=5)
 
             lbl_name = ctk.CTkLabel(
-                row, text=name, width=200, anchor="w",
+                row, text=task.name, width=200, anchor="w",
                 font=("Roboto", 14, "bold"),
             )
             lbl_name.pack(side="left", padx=10)
@@ -257,7 +293,66 @@ class App(ctk.CTk):
             )
             lbl_status.pack(side="left", padx=10)
 
-            self.scan_rows[name] = lbl_status
+            self.scan_rows[task.name] = lbl_status
+
+        advanced_section = SectionFrame(self.fs_container, "Advanced Tools")
+        advanced_section.pack(fill="x", pady=(0, 10))
+
+        advanced_hint = ctk.CTkLabel(
+            advanced_section.content,
+            text="Use these only when you intentionally want deeper troubleshooting or a restart.",
+            text_color="#f4b400",
+            anchor="w",
+            justify="left",
+        )
+        advanced_hint.pack(fill="x", pady=(0, 10))
+
+        self.advanced_scan_rows: dict[str, ctk.CTkLabel] = {}
+        self.advanced_scan_buttons: dict[str, ctk.CTkButton] = {}
+
+        for task in self.scan_service.get_advanced_tasks():
+            card = ctk.CTkFrame(advanced_section.content)
+            card.pack(fill="x", pady=5)
+
+            text_col = ctk.CTkFrame(card, fg_color="transparent")
+            text_col.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+
+            name_label = ctk.CTkLabel(
+                text_col,
+                text=task.name,
+                font=("Roboto", 14, "bold"),
+                anchor="w",
+            )
+            name_label.pack(fill="x")
+
+            caution_label = ctk.CTkLabel(
+                text_col,
+                text=task.caution,
+                text_color="gray70",
+                justify="left",
+                anchor="w",
+                wraplength=520,
+            )
+            caution_label.pack(fill="x", pady=(2, 6))
+
+            status_label = ctk.CTkLabel(
+                text_col,
+                text="Ready",
+                text_color="gray",
+                anchor="w",
+            )
+            status_label.pack(fill="x")
+
+            button = ctk.CTkButton(
+                card,
+                text=task.button_text,
+                command=lambda current_task=task: self.start_advanced_task(current_task),
+                width=190,
+            )
+            button.pack(side="right", padx=10, pady=10)
+
+            self.advanced_scan_rows[task.name] = status_label
+            self.advanced_scan_buttons[task.name] = button
 
     # ------------------------------------------------------------------
     # Full Scan
@@ -278,45 +373,91 @@ class App(ctk.CTk):
         for lbl in self.scan_rows.values():
             lbl.configure(text="Pending", text_color="gray")
 
-        threading.Thread(target=self._run_full_scan, daemon=True).start()
+        threading.Thread(
+            target=self._run_task_batch,
+            args=(self.check_list, self.scan_rows, self.start_scan_btn, "Start Health Scan"),
+            daemon=True,
+        ).start()
 
-    def _run_full_scan(self) -> None:
-        """Execute each check sequentially in a background thread."""
-        for name, func, reboot in self.check_list:
-            self._ui_scan_status(name, "Running...", "orange")
+    def start_advanced_task(self, task: ScanTask) -> None:
+        """Run a single advanced task after explicit user confirmation."""
+        if task.requires_reboot:
+            approved = messagebox.askyesno(
+                "Restart Required",
+                f"{task.name} will schedule a restart-based diagnostic.\n\n"
+                "Do you want to continue?",
+            )
+            if not approved:
+                self.advanced_scan_rows[task.name].configure(text="Cancelled", text_color="yellow")
+                return
 
-            if reboot:
-                if not messagebox.askyesno(
-                    "Reboot Required",
-                    f"The check '{name}' requires a system restart.\n\n"
-                    "Do you want to proceed knowing your PC will reboot?",
-                ):
-                    self._ui_scan_status(name, "Skipped by User", "yellow")
-                    continue
+        button = self.advanced_scan_buttons[task.name]
+        button.configure(state="disabled", text="Running...")
+        self.advanced_scan_rows[task.name].configure(text="Running...", text_color="orange")
+        threading.Thread(target=self._run_single_task, args=(task,), daemon=True).start()
 
-            # Error-protected execution (per review feedback)
+    def _run_task_batch(
+        self,
+        tasks: list[ScanTask],
+        row_map: dict[str, ctk.CTkLabel],
+        trigger_button: ctk.CTkButton,
+        idle_text: str,
+    ) -> None:
+        """Execute a group of checks sequentially in a background thread."""
+        for task in tasks:
+            self._ui_scan_status(row_map, task.name, "Running...", "orange")
             try:
-                success, output = func()
+                success, output = task.runner()
             except Exception as exc:
-                self._ui_scan_status(name, f"Error: {str(exc)[:50]}", "red")
-                print(f"[{name}] EXCEPTION: {exc}")
+                self._ui_scan_status(row_map, task.name, f"Error: {str(exc)[:50]}", "red")
+                print(f"[{task.name}] EXCEPTION: {exc}")
                 continue
 
-            if success:
-                display = output if len(output) < 50 else "OK"
-                self._ui_scan_status(name, display, "green")
-            else:
-                if "Not a Laptop" in output:
-                    self._ui_scan_status(name, "Skipped (Not a Laptop)", "yellow")
-                else:
-                    self._ui_scan_status(name, output, "red")
-                    print(f"[{name}] {output}")
+            self._finalize_scan_status(row_map, task.name, success, output)
 
-        self.after(0, lambda: self.start_scan_btn.configure(state="normal", text="Start Full Scan"))
+        self.after(0, lambda: trigger_button.configure(state="normal", text=idle_text))
 
-    def _ui_scan_status(self, name: str, text: str, color: str) -> None:
+    def _run_single_task(self, task: ScanTask) -> None:
+        """Execute one advanced task in a background thread."""
+        try:
+            success, output = task.runner()
+        except Exception as exc:
+            self._ui_scan_status(self.advanced_scan_rows, task.name, f"Error: {str(exc)[:50]}", "red")
+            print(f"[{task.name}] EXCEPTION: {exc}")
+        else:
+            self._finalize_scan_status(self.advanced_scan_rows, task.name, success, output)
+        finally:
+            button = self.advanced_scan_buttons[task.name]
+            self.after(0, lambda: button.configure(state="normal", text=task.button_text))
+
+    def _finalize_scan_status(
+        self,
+        row_map: dict[str, ctk.CTkLabel],
+        task_name: str,
+        success: bool,
+        output: str,
+    ) -> None:
+        """Map scan output into user-facing status text."""
+        if success:
+            display = output if len(output) < 50 else "OK"
+            self._ui_scan_status(row_map, task_name, display, "green")
+            return
+
+        if "Not a Laptop" in output:
+            self._ui_scan_status(row_map, task_name, "Skipped (Not a Laptop)", "yellow")
+        else:
+            self._ui_scan_status(row_map, task_name, output, "red")
+            print(f"[{task_name}] {output}")
+
+    def _ui_scan_status(
+        self,
+        row_map: dict[str, ctk.CTkLabel],
+        name: str,
+        text: str,
+        color: str,
+    ) -> None:
         """Thread-safe helper to update a scan-row label."""
-        self.after(0, lambda: self.scan_rows[name].configure(text=text, text_color=color))
+        self.after(0, lambda: row_map[name].configure(text=text, text_color=color))
 
     # ------------------------------------------------------------------
     # Real-time monitor
@@ -326,27 +467,8 @@ class App(ctk.CTk):
         """Periodically poll diagnostics and schedule UI updates."""
         while not self._stop_event.is_set():
             try:
-                cpu_load = self.cpu_mod.get_cpu_usage()
-                per_core = self.cpu_mod.get_per_core_usage()
-                self.cpu_usage_var.set(f"{cpu_load}%")
-
-                ram = self.ram_mod.get_ram_info()
-                self.ram_usage_var.set(f"{ram['Percentage']}%")
-
-                gpus = self.gpu_mod.get_gpu_info()
-                self.gpu_count_var.set(f"{len(gpus)} Device(s)")
-
-                disks = self.disk_mod.get_disk_partitions_and_usage()
-                self.disk_count_var.set(f"{len(disks)} Partitions")
-                smart = self.disk_mod.get_smart_status()
-
-                # Store latest data for export
-                self._last_gpus = gpus
-                self._last_disks = disks
-                self._last_smart = smart
-                self._last_ram = ram
-
-                self.after(0, self._update_ui, per_core, ram, gpus, disks, smart)
+                snapshot = self.snapshot_collector.collect()
+                self.after(0, lambda current=snapshot: self._apply_snapshot(current))
 
             except Exception as e:
                 print(f"Error in monitor: {e}")
@@ -357,6 +479,49 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
     # UI update (runs on main thread)
     # ------------------------------------------------------------------
+
+    def _apply_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
+        """Apply a collected snapshot on the Tk main thread."""
+        self.cpu_usage_var.set(snapshot.summary.cpu_usage_text)
+        self.ram_usage_var.set(snapshot.summary.ram_usage_text)
+        self.gpu_count_var.set(snapshot.summary.gpu_status_text)
+        self.disk_count_var.set(snapshot.summary.disk_status_text)
+
+        self._last_gpus = snapshot.gpus
+        self._last_disks = snapshot.disks
+        self._last_smart = snapshot.smart
+        self._last_ram = snapshot.ram
+        self._last_health_summary = snapshot.health_summary
+
+        self._update_health_summary(snapshot.health_summary)
+        self._update_ui(
+            snapshot.per_core,
+            snapshot.ram,
+            snapshot.gpus,
+            snapshot.disks,
+            snapshot.smart,
+        )
+
+    def _update_health_summary(self, summary: Any) -> None:
+        """Refresh the dashboard health summary and findings."""
+        self.health_summary_var.set(summary.headline)
+        self.health_summary_label.configure(text_color=self._health_status_color(summary.overall_status))
+
+        for child in self.health_findings_container.winfo_children():
+            child.destroy()
+        self.health_finding_labels = []
+
+        for finding in summary.findings[:4]:
+            label = ctk.CTkLabel(
+                self.health_findings_container,
+                text=f"{finding.title}: {finding.message}",
+                text_color=self._health_status_color(finding.severity),
+                anchor="w",
+                justify="left",
+                wraplength=860,
+            )
+            label.pack(fill="x", pady=2)
+            self.health_finding_labels.append(label)
 
     def _update_ui(
         self,
@@ -529,6 +694,16 @@ class App(ctk.CTk):
             pass
         return None
 
+    @staticmethod
+    def _health_status_color(status: str) -> Any:
+        """Map a health status to a user-facing accent colour."""
+        return {
+            "ok": "#2e8b57",
+            "info": "#4f83cc",
+            "warning": "#f4b400",
+            "critical": "#d93025",
+        }.get(status, ("gray10", "gray90"))
+
     # ------------------------------------------------------------------
     # Export report
     # ------------------------------------------------------------------
@@ -576,6 +751,14 @@ class App(ctk.CTk):
                 smart = getattr(self, "_last_smart", self.disk_mod.get_smart_status())
                 for k, v in smart.items():
                     writer.writerow(["SMART", k, v])
+
+                # Health Summary
+                health_summary = getattr(self, "_last_health_summary", None)
+                if health_summary is not None:
+                    writer.writerow(["Health", "Overall Status", health_summary.overall_status])
+                    writer.writerow(["Health", "Headline", health_summary.headline])
+                    for idx, finding in enumerate(health_summary.findings, start=1):
+                        writer.writerow([f"Health Finding {idx}", finding.title, finding.message])
 
             messagebox.showinfo("Export Complete", f"Report saved to:\n{path}")
         except Exception as e:

@@ -211,8 +211,8 @@ class FullScanDiagnostic:
     # Scan list
     # ------------------------------------------------------------------
 
-    def get_full_scan_list(self) -> list[tuple[str, Callable[[], tuple[bool, str]], bool]]:
-        """Return an ordered list of ``(name, function, requires_reboot)`` tuples."""
+    def get_routine_scan_list(self) -> list[tuple[str, Callable[[], tuple[bool, str]], bool]]:
+        """Return the checks included in the default routine health scan."""
         return [
             ("System File Checker", self.run_sfc, False),
             ("DISM Image Repair", self.run_dism, False),
@@ -220,6 +220,15 @@ class FullScanDiagnostic:
             ("Quick Disk Check", self.run_chkdsk_quick, False),
             ("Power Monitor", self.run_power_diag, False),
             ("Battery Health", self.run_battery_report, False),
+        ]
+
+    def get_advanced_scan_list(self) -> list[tuple[str, Callable[[], tuple[bool, str]], bool]]:
+        """Return deeper troubleshooting tools that need stronger user intent."""
+        return [
             ("Driver Verifier", self.run_driver_verifier, False),
             ("Memory Diagnostic", self.run_memory_diag, True),
         ]
+
+    def get_full_scan_list(self) -> list[tuple[str, Callable[[], tuple[bool, str]], bool]]:
+        """Return every scan task for backwards compatibility."""
+        return [*self.get_routine_scan_list(), *self.get_advanced_scan_list()]
