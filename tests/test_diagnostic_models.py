@@ -18,10 +18,11 @@ def test_scan_result_formats_success_messages():
     assert result.status_color == "green"
 
 
-def test_scan_result_truncates_long_success_to_ok():
+def test_scan_result_keeps_richer_success_summary():
     result = ScanResult.from_runner_output("SFC", True, "x" * 60)
 
-    assert result.display_text == "OK"
+    assert result.display_text == "x" * 60
+    assert "SUCCESS" in result.log_message
 
 
 def test_scan_result_formats_laptop_skip():

@@ -17,6 +17,7 @@ class ScanTask:
     runner: Callable[[], tuple[bool, str]]
     requires_reboot: bool = False
     is_advanced: bool = False
+    category: str = "System Repair"
     caution: str = ""
     button_text: str = "Run"
 
@@ -29,8 +30,21 @@ class FullScanService:
 
     def get_routine_tasks(self) -> list[ScanTask]:
         """Return safe checks included in the default health scan."""
+        task_categories = {
+            "System File Checker": "System Repair",
+            "DISM Image Repair": "System Repair",
+            "Disk Check (Scan)": "Storage",
+            "Quick Disk Check": "Storage",
+            "Power Monitor": "Power",
+            "Battery Health": "Power",
+        }
         return [
-            ScanTask(name=name, runner=runner, requires_reboot=requires_reboot)
+            ScanTask(
+                name=name,
+                runner=runner,
+                requires_reboot=requires_reboot,
+                category=task_categories.get(name, "System Repair"),
+            )
             for name, runner, requires_reboot in self.diagnostic.get_routine_scan_list()
         ]
 
@@ -56,6 +70,7 @@ class FullScanService:
                     runner=runner,
                     requires_reboot=requires_reboot,
                     is_advanced=True,
+                    category="Advanced Tools",
                     caution=meta.get("caution", ""),
                     button_text=meta.get("button_text", "Run"),
                 )

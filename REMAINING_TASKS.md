@@ -34,26 +34,26 @@ This document tracks the major work still left for `Master Sentinal` before it i
 
 ### Dashboard
 
-- Replace encoded/misaligned text artifacts in the UI.
-- Show health findings with badges, icons, or stronger severity styling.
-- Add empty states for unavailable diagnostics instead of generic placeholders.
-- Add loading states for first snapshot collection.
-- Improve spacing and responsiveness for smaller screens.
+- [x] Replace encoded/misaligned text artifacts in the UI.
+- [x] Show health findings with badges, icons, or stronger severity styling.
+- [x] Add empty states for unavailable diagnostics instead of generic placeholders.
+- [x] Add loading states for first snapshot collection.
+- [x] Improve spacing and responsiveness for smaller screens.
 
 ### Full Scan
 
-- Show scan duration and progress more clearly.
-- Add richer scan result messages instead of truncating long output to `OK`.
-- Save detailed logs for each scan task.
-- Group scan tools by category: system repair, storage, power, advanced tools.
-- Add confirmation text for risky tools like Driver Verifier.
+- [x] Show scan duration and progress more clearly.
+- [x] Add richer scan result messages instead of truncating long output to `OK`.
+- [x] Save detailed logs for each scan task.
+- [x] Group scan tools by category: system repair, storage, power, advanced tools.
+- [x] Add confirmation text for risky tools like Driver Verifier.
 
 ### Reports
 
-- Add HTML report export.
-- Add JSON export for bug reports and community issue templates.
-- Include app version, timestamp, OS version, and privilege level in exports.
-- Include health findings and recommended actions in a cleaner format.
+- [x] Add HTML report export.
+- [x] Add JSON export for bug reports and community issue templates.
+- [x] Include app version, timestamp, OS version, and privilege level in exports.
+- [x] Include health findings and recommended actions in a cleaner format.
 
 ## Reliability Tasks
 

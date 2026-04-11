@@ -102,13 +102,14 @@ class ScanResult:
     def from_runner_output(cls, task_name: str, success: bool, output: str) -> ScanResult:
         """Build a scan result from a diagnostic runner tuple."""
         if success:
-            display = output if len(output) < 50 else "OK"
+            display = cls._display_summary(output, fallback="Completed")
             return cls(
                 task_name=task_name,
                 success=True,
                 message=output,
                 display_text=display,
                 status_color="green",
+                log_message=f"[{task_name}] SUCCESS: {output}",
             )
 
         if "Not a Laptop" in output:
@@ -141,6 +142,17 @@ class ScanResult:
             status_color="red",
             log_message=f"[{task_name}] EXCEPTION: {message}",
         )
+
+    @staticmethod
+    def _display_summary(output: str, fallback: str) -> str:
+        """Return a readable one-line status while preserving detailed logs separately."""
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            return fallback
+        summary = lines[0]
+        if len(summary) > 140:
+            return f"{summary[:137]}..."
+        return summary
 
 
 @dataclass(frozen=True)

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import csv
+import os
+import platform
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+from time import perf_counter
 from tkinter import messagebox, filedialog
 from typing import Any, Callable
 
@@ -12,6 +15,7 @@ import customtkinter as ctk
 
 from config import (
     APPEARANCE_MODE,
+    APP_VERSION,
     COLOR_THEME,
     TEMP_ALERT_THRESHOLD_C,
     UPDATE_INTERVAL_SEC,
@@ -27,6 +31,7 @@ from modules.gpu_diag import GPUDiagnostic
 from modules.ram_diag import RAMDiagnostic
 from services.full_scan_service import FullScanService, ScanTask
 from services.live_snapshot import DiagnosticSnapshot, LiveSnapshotCollector
+from services.report_exporter import write_csv_report, write_html_report, write_json_report
 from ui.components import InfoRow, MetricCard, SectionFrame
 
 
@@ -102,13 +107,19 @@ class App(ctk.CTk):
             disk_mod=self.disk_mod,
         )
         self.scan_service = FullScanService(self.full_scan_mod)
+        self.scan_logs: list[dict[str, str]] = []
+        self.last_scan_started_at: datetime | None = None
+        self.last_scan_finished_at: datetime | None = None
+        self._active_scan_started_at = 0.0
 
         # Dashboard string vars
         self.cpu_usage_var = ctk.StringVar(value="0%")
         self.ram_usage_var = ctk.StringVar(value="0%")
-        self.gpu_count_var = ctk.StringVar(value="Searching...")
-        self.disk_count_var = ctk.StringVar(value="Scanning...")
+        self.gpu_count_var = ctk.StringVar(value="Loading...")
+        self.disk_count_var = ctk.StringVar(value="Loading...")
         self.health_summary_var = ctk.StringVar(value="Analyzing live system health...")
+        self.scan_progress_var = ctk.StringVar(value="Ready to scan")
+        self.scan_duration_var = ctk.StringVar(value="No scan run yet")
 
         # Build each tab's UI
         self.setup_dashboard()
@@ -165,16 +176,25 @@ class App(ctk.CTk):
         grid = ctk.CTkFrame(df, fg_color="transparent")
         grid.pack(fill="x", padx=20, pady=20)
 
-        MetricCard(grid, "CPU Load", self.cpu_usage_var).pack(side="left", padx=10, expand=True, fill="x")
-        MetricCard(grid, "RAM Usage", self.ram_usage_var).pack(side="left", padx=10, expand=True, fill="x")
-        MetricCard(grid, "GPU Status", self.gpu_count_var).pack(side="left", padx=10, expand=True, fill="x")
-        MetricCard(grid, "Disks Found", self.disk_count_var).pack(side="left", padx=10, expand=True, fill="x")
+        for col in range(2):
+            grid.grid_columnconfigure(col, weight=1, uniform="dashboard")
+
+        cards = [
+            ("CPU Load", self.cpu_usage_var),
+            ("RAM Usage", self.ram_usage_var),
+            ("GPU Status", self.gpu_count_var),
+            ("Disks Found", self.disk_count_var),
+        ]
+        for index, (title, value_var) in enumerate(cards):
+            card = MetricCard(grid, title, value_var)
+            card.grid(row=index // 2, column=index % 2, padx=10, pady=10, sticky="ew")
 
         # Export Report button
         export_btn = ctk.CTkButton(
             df, text="📄 Export Report (CSV)", font=("Roboto", 14), height=36,
             command=self._export_report,
         )
+        export_btn.configure(text="Export Report (CSV, HTML, or JSON)")
         export_btn.pack(fill="x", padx=20, pady=(0, 10))
 
         self.health_frame = SectionFrame(df, "Health Overview")
@@ -217,11 +237,13 @@ class App(ctk.CTk):
         """Prepare the Memory section (populated by the monitor loop)."""
         self.memory_info_frame = SectionFrame(self.frames["Memory"], "Memory Statistics")
         self.memory_info_frame.pack(fill="x", padx=20, pady=10)
+        self._set_empty_state(self.memory_info_frame.content, "Waiting for the first memory snapshot...")
 
     def setup_gpu_ui(self) -> None:
         """Prepare the GPU container (populated by the monitor loop)."""
         self.gpu_container = ctk.CTkFrame(self.frames["GPU"], fg_color="transparent")
         self.gpu_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.gpu_container, "Waiting for the first GPU snapshot...")
 
     def setup_storage_ui(self) -> None:
         """Prepare the Storage + SMART containers."""
@@ -229,9 +251,11 @@ class App(ctk.CTk):
 
         self.storage_container = ctk.CTkFrame(sf, fg_color="transparent")
         self.storage_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.storage_container, "Waiting for the first storage snapshot...")
 
         self.smart_frame = SectionFrame(sf, "SMART Health Status")
         self.smart_frame.pack(fill="x", padx=20, pady=10)
+        self._set_empty_state(self.smart_frame.content, "Waiting for the first SMART snapshot...")
 
     def setup_system_ui(self) -> None:
         """Build the static Motherboard & BIOS info section."""
@@ -263,6 +287,25 @@ class App(ctk.CTk):
         )
         self.start_scan_btn.pack(fill="x", pady=(0, 20))
 
+        progress_row = ctk.CTkFrame(self.fs_container, fg_color="transparent")
+        progress_row.pack(fill="x", pady=(0, 12))
+
+        self.scan_progress_label = ctk.CTkLabel(
+            progress_row,
+            textvariable=self.scan_progress_var,
+            anchor="w",
+            text_color="gray70",
+        )
+        self.scan_progress_label.pack(side="left", fill="x", expand=True)
+
+        self.scan_duration_label = ctk.CTkLabel(
+            progress_row,
+            textvariable=self.scan_duration_var,
+            anchor="e",
+            text_color="gray70",
+        )
+        self.scan_duration_label.pack(side="right")
+
         info_label = ctk.CTkLabel(
             self.fs_container,
             text="Routine health checks run together. Riskier tools are listed separately below.",
@@ -277,20 +320,29 @@ class App(ctk.CTk):
 
         self.scan_rows: dict[str, ctk.CTkLabel] = {}
         self.check_list = self.scan_service.get_routine_tasks()
+        category_sections: dict[str, SectionFrame] = {}
 
         for task in self.check_list:
-            row = ctk.CTkFrame(routine_section.content)
+            category = task.category or "System Repair"
+            if category not in category_sections:
+                section = SectionFrame(routine_section.content, category)
+                section.pack(fill="x", pady=(0, 12))
+                category_sections[category] = section
+
+            row = ctk.CTkFrame(category_sections[category].content)
             row.pack(fill="x", pady=5)
 
             lbl_name = ctk.CTkLabel(
-                row, text=task.name, width=200, anchor="w",
+                row, text=task.name, width=210, anchor="w",
                 font=("Roboto", 14, "bold"),
             )
             lbl_name.pack(side="left", padx=10)
 
             lbl_status = ctk.CTkLabel(
-                row, text="Pending", width=300,
+                row, text="Pending", width=420,
                 text_color="gray", anchor="w",
+                justify="left",
+                wraplength=520,
             )
             lbl_status.pack(side="left", padx=10)
 
@@ -370,6 +422,12 @@ class App(ctk.CTk):
             return
 
         self.start_scan_btn.configure(state="disabled", text="Scanning...")
+        self.scan_logs = []
+        self.last_scan_started_at = datetime.now(timezone.utc)
+        self.last_scan_finished_at = None
+        self._active_scan_started_at = perf_counter()
+        self.scan_progress_var.set(f"Running 0 of {len(self.check_list)} routine checks")
+        self.scan_duration_var.set("Elapsed 0.0s")
 
         for lbl in self.scan_rows.values():
             lbl.configure(text="Pending", text_color="gray")
@@ -382,10 +440,12 @@ class App(ctk.CTk):
 
     def start_advanced_task(self, task: ScanTask) -> None:
         """Run a single advanced task after explicit user confirmation."""
-        if task.requires_reboot:
+        if task.requires_reboot or task.caution:
+            title = "Restart Required" if task.requires_reboot else "Confirm Advanced Tool"
+            restart_text = "\n\nThis may require a restart." if task.requires_reboot else ""
             approved = messagebox.askyesno(
-                "Restart Required",
-                f"{task.name} will schedule a restart-based diagnostic.\n\n"
+                title,
+                f"{task.name}\n\n{task.caution}{restart_text}\n\n"
                 "Do you want to continue?",
             )
             if not approved:
@@ -405,42 +465,84 @@ class App(ctk.CTk):
         idle_text: str,
     ) -> None:
         """Execute a group of checks sequentially in a background thread."""
-        for task in tasks:
+        total = len(tasks)
+        for index, task in enumerate(tasks, start=1):
+            self._ui_scan_progress(index - 1, total, "Running")
             self._ui_scan_status(row_map, task.name, "Running...", "orange")
+            started = perf_counter()
             try:
                 success, output = task.runner()
             except Exception as exc:
-                self._finalize_scan_status(row_map, ScanResult.from_exception(task.name, exc))
+                self._finalize_scan_status(row_map, ScanResult.from_exception(task.name, exc), perf_counter() - started)
                 continue
 
-            self._finalize_scan_status(row_map, ScanResult.from_runner_output(task.name, success, output))
+            self._finalize_scan_status(
+                row_map,
+                ScanResult.from_runner_output(task.name, success, output),
+                perf_counter() - started,
+            )
+            self._ui_scan_progress(index, total, "Running")
 
+        self.last_scan_finished_at = datetime.now(timezone.utc)
+        elapsed = perf_counter() - self._active_scan_started_at
+        self.after(0, lambda: self.scan_progress_var.set(f"Finished {total} of {total} checks"))
+        self.after(0, lambda: self.scan_duration_var.set(f"Completed in {elapsed:.1f}s"))
         self.after(0, lambda: trigger_button.configure(state="normal", text=idle_text))
 
     def _run_single_task(self, task: ScanTask) -> None:
         """Execute one advanced task in a background thread."""
+        self.after(0, lambda: self.scan_progress_var.set(f"Running {task.name}"))
+        started = perf_counter()
         try:
             success, output = task.runner()
         except Exception as exc:
-            self._finalize_scan_status(self.advanced_scan_rows, ScanResult.from_exception(task.name, exc))
+            self._finalize_scan_status(
+                self.advanced_scan_rows,
+                ScanResult.from_exception(task.name, exc),
+                perf_counter() - started,
+            )
         else:
             self._finalize_scan_status(
                 self.advanced_scan_rows,
                 ScanResult.from_runner_output(task.name, success, output),
+                perf_counter() - started,
             )
         finally:
+            elapsed = perf_counter() - started
             button = self.advanced_scan_buttons[task.name]
+            self.after(0, lambda: self.scan_progress_var.set(f"Finished {task.name}"))
+            self.after(0, lambda: self.scan_duration_var.set(f"Last advanced tool: {elapsed:.1f}s"))
             self.after(0, lambda: button.configure(state="normal", text=task.button_text))
 
     def _finalize_scan_status(
         self,
         row_map: dict[str, ctk.CTkLabel],
         result: ScanResult,
+        duration_sec: float,
     ) -> None:
         """Map scan output into user-facing status text."""
-        self._ui_scan_status(row_map, result.task_name, result.display_text, result.status_color)
-        if result.log_message:
-            print(result.log_message)
+        self._ui_scan_status(
+            row_map,
+            result.task_name,
+            f"{result.display_text} ({duration_sec:.1f}s)",
+            result.status_color,
+        )
+        self.scan_logs.append(
+            {
+                "task": result.task_name,
+                "status": "success" if result.success else "failed",
+                "duration": f"{duration_sec:.1f}s",
+                "message": result.message,
+                "display_text": result.display_text,
+                "log_message": result.log_message,
+            }
+        )
+
+    def _ui_scan_progress(self, completed: int, total: int, prefix: str) -> None:
+        """Thread-safe helper to update batch scan progress."""
+        elapsed = perf_counter() - self._active_scan_started_at
+        self.after(0, lambda: self.scan_progress_var.set(f"{prefix} {completed} of {total} checks"))
+        self.after(0, lambda: self.scan_duration_var.set(f"Elapsed {elapsed:.1f}s"))
 
     def _ui_scan_status(
         self,
@@ -513,18 +615,33 @@ class App(ctk.CTk):
             action = getattr(finding, "recommended_action", "")
             state = getattr(finding, "state", None) or finding.severity
             persistence = getattr(finding, "persistence", "unknown")
-            text = f"[{state}/{persistence}] {finding.title}: {finding.message}"
+            text = f"{finding.title}: {finding.message}"
             if action:
                 text = f"{text} Action: {action}"
+
+            row = ctk.CTkFrame(self.health_findings_container, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+
+            badge = ctk.CTkLabel(
+                row,
+                text=f"{finding.severity.upper()} / {state} / {persistence}",
+                width=190,
+                fg_color=self._health_status_color(finding.severity),
+                text_color="white",
+                corner_radius=6,
+                anchor="center",
+            )
+            badge.pack(side="left", padx=(0, 8), anchor="n")
+
             label = ctk.CTkLabel(
-                self.health_findings_container,
+                row,
                 text=text,
                 text_color=self._health_status_color(finding.severity),
                 anchor="w",
                 justify="left",
                 wraplength=860,
             )
-            label.pack(fill="x", pady=2)
+            label.pack(side="left", fill="x", expand=True)
             self.health_finding_labels.append(label)
 
     def _update_ui(
@@ -562,6 +679,8 @@ class App(ctk.CTk):
         # --- Memory ---
         memory_rows = memory_stats.as_rows()
         if not self.mem_widgets:
+            for child in self.memory_info_frame.content.winfo_children():
+                child.destroy()
             for k, v in memory_rows.items():
                 row = InfoRow(self.memory_info_frame.content, k, str(v))
                 row.pack(fill="x", pady=2)
@@ -592,6 +711,11 @@ class App(ctk.CTk):
         )
 
         # SMART — flat key→value (no nested dicts), use simpler path
+        if not smart_drives:
+            self._set_empty_state(self.smart_frame.content, "No SMART diagnostics are available yet.")
+            self.smart_widgets = {}
+            return
+
         current_smart_keys = [smart_drive.label_and_value()[0] for smart_drive in smart_drives]
         if current_smart_keys != list(self.smart_widgets.keys()):
             for child in self.smart_frame.content.winfo_children():
@@ -612,6 +736,20 @@ class App(ctk.CTk):
     # Generic device-section updater (eliminates GPU/Disk duplication)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _set_empty_state(container: ctk.CTkBaseClass, message: str) -> None:
+        """Replace a container's children with a quiet empty-state message."""
+        for child in container.winfo_children():
+            child.destroy()
+        label = ctk.CTkLabel(
+            container,
+            text=message,
+            text_color="gray70",
+            anchor="w",
+            justify="left",
+        )
+        label.pack(fill="x", padx=10, pady=10)
+
     def _update_typed_device_section(
         self,
         container: ctk.CTkFrame,
@@ -624,6 +762,11 @@ class App(ctk.CTk):
     ) -> None:
         """Compare typed device items against cached widgets and rebuild when needed."""
         rules = alert_rules or {}
+
+        if not items:
+            self._set_empty_state(container, "No diagnostics are available for this section yet.")
+            cache.clear()
+            return
 
         current_sigs = [key_fn(item) for item in items]
         cached_sigs = list(cache.keys())
@@ -690,85 +833,113 @@ class App(ctk.CTk):
     # Export report
     # ------------------------------------------------------------------
 
+    def _build_report_payload(self) -> dict[str, Any]:
+        """Build a JSON-serializable report payload from the latest diagnostics."""
+        cpu_info = getattr(self, "_last_cpu_info", None) or self.cpu_mod.get_cpu_details()
+        board_info = getattr(self, "_last_board_info", None) or self.board_mod.get_board_details()
+        memory_stats = getattr(self, "_last_memory_stats", None) or self.ram_mod.get_ram_stats()
+        gpu_devices = getattr(self, "_last_gpu_devices", None) or self.gpu_mod.get_gpu_devices()
+        disk_partitions = getattr(self, "_last_disk_partitions", None) or self.disk_mod.get_disk_partitions()
+        smart_drives = getattr(self, "_last_smart_drives", None) or self.disk_mod.get_smart_drive_statuses()
+        health_summary = getattr(self, "_last_health_summary", None)
+
+        metadata = {
+            "app_name": WINDOW_TITLE,
+            "app_version": APP_VERSION,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "os": platform.platform(),
+            "machine": platform.machine(),
+            "running_as_admin": self._is_running_as_admin(),
+            "workspace": os.getcwd(),
+        }
+        if self.last_scan_started_at:
+            metadata["last_scan_started_at"] = self.last_scan_started_at.isoformat()
+        if self.last_scan_finished_at:
+            metadata["last_scan_finished_at"] = self.last_scan_finished_at.isoformat()
+
+        health_payload: dict[str, Any] = {
+            "overall_status": "",
+            "headline": "No live health summary captured yet.",
+            "score": "",
+            "severity_rollup": "",
+            "severity_counts": {},
+            "findings": [],
+        }
+        if health_summary is not None:
+            health_payload = {
+                "overall_status": health_summary.overall_status,
+                "headline": health_summary.headline,
+                "score": getattr(health_summary, "health_score", ""),
+                "severity_rollup": getattr(health_summary, "severity_rollup", ""),
+                "severity_counts": getattr(health_summary, "severity_counts", {}),
+                "findings": [
+                    {
+                        "title": finding.title,
+                        "message": finding.message,
+                        "severity": finding.severity,
+                        "recommended_action": getattr(finding, "recommended_action", ""),
+                        "state": getattr(finding, "state", ""),
+                        "persistence": getattr(finding, "persistence", ""),
+                    }
+                    for finding in health_summary.findings
+                ],
+            }
+
+        return {
+            "metadata": metadata,
+            "sections": {
+                "CPU": {"Usage": self.cpu_usage_var.get(), **cpu_info.as_rows()},
+                "System": board_info.as_rows(),
+                "RAM": memory_stats.as_rows(),
+                "GPU": self._device_rows(gpu_devices),
+                "Disk": self._device_rows(disk_partitions, label_attr="mountpoint"),
+                "SMART": dict(smart_drive.label_and_value() for smart_drive in smart_drives),
+            },
+            "health": health_payload,
+            "scan_logs": list(self.scan_logs),
+        }
+
+    @staticmethod
+    def _device_rows(items: list[Any], label_attr: str = "name") -> dict[str, str]:
+        """Flatten device rows into report-friendly key/value content."""
+        rows: dict[str, str] = {}
+        for index, item in enumerate(items, start=1):
+            label = getattr(item, label_attr, "") or getattr(item, "device", "") or f"Device {index}"
+            for key, value in item.as_dict().items():
+                rows[f"{label} - {key}"] = str(value)
+        return rows
+
+    def _is_running_as_admin(self) -> bool:
+        """Return whether the app is currently elevated."""
+        try:
+            return self.full_scan_mod.is_admin()
+        except Exception:
+            return False
+
     def _export_report(self) -> None:
-        """Save current diagnostics snapshot to a CSV file."""
+        """Save current diagnostics snapshot to CSV, HTML, or JSON."""
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("HTML files", "*.html"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
             initialfile=f"MasterSentinal_Report_{datetime.now():%Y%m%d_%H%M%S}.csv",
         )
         if not path:
             return
 
         try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Section", "Key", "Value"])
-
-                # CPU
-                writer.writerow(["CPU", "Usage", self.cpu_usage_var.get()])
-                cpu_info = getattr(self, "_last_cpu_info", None)
-                if cpu_info is None:
-                    cpu_info = self.cpu_mod.get_cpu_details()
-                for k, v in cpu_info.as_rows().items():
-                    writer.writerow(["CPU", k, v])
-
-                # System
-                board_info = getattr(self, "_last_board_info", None)
-                if board_info is None:
-                    board_info = self.board_mod.get_board_details()
-                for k, v in board_info.as_rows().items():
-                    writer.writerow(["System", k, v])
-
-                # RAM
-                memory_stats = getattr(self, "_last_memory_stats", None)
-                if memory_stats is None:
-                    memory_stats = self.ram_mod.get_ram_stats()
-                for k, v in memory_stats.as_rows().items():
-                    writer.writerow(["RAM", k, v])
-
-                # GPUs
-                gpu_devices = getattr(self, "_last_gpu_devices", None)
-                if gpu_devices is None:
-                    gpu_devices = self.gpu_mod.get_gpu_devices()
-                for i, gpu in enumerate(gpu_devices):
-                    for k, v in gpu.as_dict().items():
-                        writer.writerow([f"GPU {i}", k, v])
-
-                # Disks
-                disk_partitions = getattr(self, "_last_disk_partitions", None)
-                if disk_partitions is None:
-                    disk_partitions = self.disk_mod.get_disk_partitions()
-                for disk in disk_partitions:
-                    label = disk.mountpoint or "?"
-                    for k, v in disk.as_dict().items():
-                        writer.writerow([f"Disk {label}", k, v])
-
-                # SMART
-                smart_drives = getattr(self, "_last_smart_drives", None)
-                if smart_drives is None:
-                    smart_drives = self.disk_mod.get_smart_drive_statuses()
-                for smart_drive in smart_drives:
-                    k, v = smart_drive.label_and_value()
-                    writer.writerow(["SMART", k, v])
-
-                # Health Summary
-                health_summary = getattr(self, "_last_health_summary", None)
-                if health_summary is not None:
-                    writer.writerow(["Health", "Overall Status", health_summary.overall_status])
-                    writer.writerow(["Health", "Score", getattr(health_summary, "health_score", "")])
-                    writer.writerow(["Health", "Severity Rollup", getattr(health_summary, "severity_rollup", "")])
-                    writer.writerow(["Health", "Headline", health_summary.headline])
-                    for idx, finding in enumerate(health_summary.findings, start=1):
-                        writer.writerow([
-                            f"Health Finding {idx}",
-                            finding.title,
-                            finding.message,
-                            getattr(finding, "recommended_action", ""),
-                            getattr(finding, "state", ""),
-                            getattr(finding, "persistence", ""),
-                        ])
-
+            payload = self._build_report_payload()
+            suffix = Path(path).suffix.lower()
+            if suffix == ".json":
+                write_json_report(path, payload)
+            elif suffix in {".html", ".htm"}:
+                write_html_report(path, payload)
+            else:
+                write_csv_report(path, payload)
             messagebox.showinfo("Export Complete", f"Report saved to:\n{path}")
         except Exception as e:
             messagebox.showerror("Export Failed", str(e))

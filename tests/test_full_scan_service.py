@@ -60,6 +60,7 @@ def test_routine_tasks_exclude_advanced_tools():
     assert "Driver Verifier" not in names
     assert "Memory Diagnostic" not in names
     assert len(names) == 6
+    assert {task.category for task in service.get_routine_tasks()} == {"System Repair", "Storage", "Power"}
 
 
 def test_advanced_tasks_capture_risky_actions():
@@ -69,3 +70,4 @@ def test_advanced_tasks_capture_risky_actions():
 
     assert tasks["Driver Verifier"].is_advanced is True
     assert tasks["Memory Diagnostic"].requires_reboot is True
+    assert tasks["Driver Verifier"].category == "Advanced Tools"

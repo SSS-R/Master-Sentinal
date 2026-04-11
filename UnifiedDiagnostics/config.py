@@ -15,5 +15,6 @@ APPEARANCE_MODE: str = "Dark"
 COLOR_THEME: str = "blue"
 
 # Window
+APP_VERSION: str = "0.1.0"
 WINDOW_TITLE: str = "Master Sentinal"
 WINDOW_GEOMETRY: str = "1100x700"
