@@ -14,21 +14,21 @@ This document tracks the major work still left for `Master Sentinal` before it i
 
 ### 2. Improve diagnostics depth
 
-- Add Windows Update health checks.
-- Add Event Viewer critical error summary.
-- Add Reliability Monitor / crash-history summary.
-- Add network diagnostics: adapter state, DNS, gateway, internet reachability.
-- Add storage diagnostics beyond basic SMART display: warning extraction, temperature if available, drive type.
-- Add security diagnostics: Defender status, firewall status, BitLocker status.
-- Add startup-impact and background-service checks.
+- [x] Add Windows Update health checks.
+- [x] Add Event Viewer critical error summary.
+- [x] Add Reliability Monitor / crash-history summary.
+- [x] Add network diagnostics: adapter state, DNS, gateway, internet reachability.
+- [x] Add storage diagnostics beyond basic SMART display: warning extraction, temperature if available, drive type.
+- [x] Add security diagnostics: Defender status, firewall status, BitLocker status.
+- [x] Add startup-impact and background-service checks.
 
 ### 3. Turn metrics into clearer diagnosis
 
-- Add a health score or severity rollup for the whole system.
-- Add recommended actions for each finding.
-- Distinguish between transient load and persistent problems.
-- Add “unsupported” vs “error” vs “warning” states more explicitly.
-- Detect likely false positives for laptops vs desktops.
+- [x] Add a health score or severity rollup for the whole system.
+- [x] Add recommended actions for each finding.
+- [x] Distinguish between transient load and persistent problems.
+- [x] Add unsupported vs error vs warning states more explicitly.
+- [x] Detect likely false positives for laptops vs desktops.
 
 ## UI Tasks
 

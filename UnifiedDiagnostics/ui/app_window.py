@@ -497,7 +497,12 @@ class App(ctk.CTk):
 
     def _update_health_summary(self, summary: Any) -> None:
         """Refresh the dashboard health summary and findings."""
-        self.health_summary_var.set(summary.headline)
+        score = getattr(summary, "health_score", None)
+        rollup = getattr(summary, "severity_rollup", "")
+        if score is not None:
+            self.health_summary_var.set(f"Health score {score}/100 - {summary.headline} ({rollup})")
+        else:
+            self.health_summary_var.set(summary.headline)
         self.health_summary_label.configure(text_color=self._health_status_color(summary.overall_status))
 
         for child in self.health_findings_container.winfo_children():
@@ -505,9 +510,15 @@ class App(ctk.CTk):
         self.health_finding_labels = []
 
         for finding in summary.findings[:4]:
+            action = getattr(finding, "recommended_action", "")
+            state = getattr(finding, "state", None) or finding.severity
+            persistence = getattr(finding, "persistence", "unknown")
+            text = f"[{state}/{persistence}] {finding.title}: {finding.message}"
+            if action:
+                text = f"{text} Action: {action}"
             label = ctk.CTkLabel(
                 self.health_findings_container,
-                text=f"{finding.title}: {finding.message}",
+                text=text,
                 text_color=self._health_status_color(finding.severity),
                 anchor="w",
                 justify="left",
@@ -745,9 +756,18 @@ class App(ctk.CTk):
                 health_summary = getattr(self, "_last_health_summary", None)
                 if health_summary is not None:
                     writer.writerow(["Health", "Overall Status", health_summary.overall_status])
+                    writer.writerow(["Health", "Score", getattr(health_summary, "health_score", "")])
+                    writer.writerow(["Health", "Severity Rollup", getattr(health_summary, "severity_rollup", "")])
                     writer.writerow(["Health", "Headline", health_summary.headline])
                     for idx, finding in enumerate(health_summary.findings, start=1):
-                        writer.writerow([f"Health Finding {idx}", finding.title, finding.message])
+                        writer.writerow([
+                            f"Health Finding {idx}",
+                            finding.title,
+                            finding.message,
+                            getattr(finding, "recommended_action", ""),
+                            getattr(finding, "state", ""),
+                            getattr(finding, "persistence", ""),
+                        ])
 
             messagebox.showinfo("Export Complete", f"Report saved to:\n{path}")
         except Exception as e:
