@@ -18,6 +18,7 @@ from config import (
     WINDOW_GEOMETRY,
     WINDOW_TITLE,
 )
+from models.diagnostic_models import DiskPartition, GPUDevice, MemoryStats, ScanResult, SmartDriveStatus
 from modules.board_diag import BoardDiagnostic
 from modules.cpu_diag import CPUDiagnostic
 from modules.disk_diag import DiskDiagnostic
@@ -198,8 +199,8 @@ class App(ctk.CTk):
 
         self.cpu_static_frame = SectionFrame(cf, "Processor Information")
         self.cpu_static_frame.pack(fill="x", padx=20, pady=10)
-        info = self.cpu_mod.get_cpu_info()
-        for k, v in info.items():
+        self._last_cpu_info = self.cpu_mod.get_cpu_details()
+        for k, v in self._last_cpu_info.as_rows().items():
             self.cpu_static_frame.add_row(k, str(v))
 
         self.cpu_realtime_label = ctk.CTkLabel(
@@ -239,8 +240,8 @@ class App(ctk.CTk):
         self.sys_info_frame = SectionFrame(sf, "Motherboard & BIOS")
         self.sys_info_frame.pack(fill="x", padx=20, pady=10)
 
-        info = self.board_mod.get_board_info()
-        for k, v in info.items():
+        self._last_board_info = self.board_mod.get_board_details()
+        for k, v in self._last_board_info.as_rows().items():
             self.sys_info_frame.add_row(k, str(v))
 
     def setup_full_scan_ui(self) -> None:
@@ -409,11 +410,10 @@ class App(ctk.CTk):
             try:
                 success, output = task.runner()
             except Exception as exc:
-                self._ui_scan_status(row_map, task.name, f"Error: {str(exc)[:50]}", "red")
-                print(f"[{task.name}] EXCEPTION: {exc}")
+                self._finalize_scan_status(row_map, ScanResult.from_exception(task.name, exc))
                 continue
 
-            self._finalize_scan_status(row_map, task.name, success, output)
+            self._finalize_scan_status(row_map, ScanResult.from_runner_output(task.name, success, output))
 
         self.after(0, lambda: trigger_button.configure(state="normal", text=idle_text))
 
@@ -422,10 +422,12 @@ class App(ctk.CTk):
         try:
             success, output = task.runner()
         except Exception as exc:
-            self._ui_scan_status(self.advanced_scan_rows, task.name, f"Error: {str(exc)[:50]}", "red")
-            print(f"[{task.name}] EXCEPTION: {exc}")
+            self._finalize_scan_status(self.advanced_scan_rows, ScanResult.from_exception(task.name, exc))
         else:
-            self._finalize_scan_status(self.advanced_scan_rows, task.name, success, output)
+            self._finalize_scan_status(
+                self.advanced_scan_rows,
+                ScanResult.from_runner_output(task.name, success, output),
+            )
         finally:
             button = self.advanced_scan_buttons[task.name]
             self.after(0, lambda: button.configure(state="normal", text=task.button_text))
@@ -433,21 +435,12 @@ class App(ctk.CTk):
     def _finalize_scan_status(
         self,
         row_map: dict[str, ctk.CTkLabel],
-        task_name: str,
-        success: bool,
-        output: str,
+        result: ScanResult,
     ) -> None:
         """Map scan output into user-facing status text."""
-        if success:
-            display = output if len(output) < 50 else "OK"
-            self._ui_scan_status(row_map, task_name, display, "green")
-            return
-
-        if "Not a Laptop" in output:
-            self._ui_scan_status(row_map, task_name, "Skipped (Not a Laptop)", "yellow")
-        else:
-            self._ui_scan_status(row_map, task_name, output, "red")
-            print(f"[{task_name}] {output}")
+        self._ui_scan_status(row_map, result.task_name, result.display_text, result.status_color)
+        if result.log_message:
+            print(result.log_message)
 
     def _ui_scan_status(
         self,
@@ -487,19 +480,19 @@ class App(ctk.CTk):
         self.gpu_count_var.set(snapshot.summary.gpu_status_text)
         self.disk_count_var.set(snapshot.summary.disk_status_text)
 
-        self._last_gpus = snapshot.gpus
-        self._last_disks = snapshot.disks
-        self._last_smart = snapshot.smart
-        self._last_ram = snapshot.ram
+        self._last_gpu_devices = snapshot.gpu_devices
+        self._last_disk_partitions = snapshot.disk_partitions
+        self._last_smart_drives = snapshot.smart_drives
+        self._last_memory_stats = snapshot.memory_stats
         self._last_health_summary = snapshot.health_summary
 
         self._update_health_summary(snapshot.health_summary)
         self._update_ui(
             snapshot.per_core,
-            snapshot.ram,
-            snapshot.gpus,
-            snapshot.disks,
-            snapshot.smart,
+            snapshot.memory_stats,
+            snapshot.gpu_devices,
+            snapshot.disk_partitions,
+            snapshot.smart_drives,
         )
 
     def _update_health_summary(self, summary: Any) -> None:
@@ -526,10 +519,10 @@ class App(ctk.CTk):
     def _update_ui(
         self,
         per_core: list[float],
-        ram: dict[str, Any],
-        gpus: list[dict[str, str]],
-        disks: list[dict[str, str]],
-        smart: dict[str, str],
+        memory_stats: MemoryStats,
+        gpu_devices: list[GPUDevice],
+        disk_partitions: list[DiskPartition],
+        smart_drives: list[SmartDriveStatus],
     ) -> None:
         """Refresh all live-data widgets. Called via ``self.after()``."""
 
@@ -556,48 +549,51 @@ class App(ctk.CTk):
                 val.configure(text=f"{usage}%")
 
         # --- Memory ---
+        memory_rows = memory_stats.as_rows()
         if not self.mem_widgets:
-            for k, v in ram.items():
+            for k, v in memory_rows.items():
                 row = InfoRow(self.memory_info_frame.content, k, str(v))
                 row.pack(fill="x", pady=2)
                 self.mem_widgets[k] = row
         else:
-            for k, v in ram.items():
+            for k, v in memory_rows.items():
                 if k in self.mem_widgets:
                     self.mem_widgets[k].value.configure(text=str(v))
 
         # --- GPU / Disk / SMART — via generic helper ---
-        self._update_device_section(
+        self._update_typed_device_section(
             container=self.gpu_container,
-            items=gpus,
+            items=gpu_devices,
             cache=self.gpu_widgets,
-            key_fn=lambda g: g.get('DeviceID', g.get('Name', '')),
-            title_fn=lambda g, i: f"GPU {i + 1}: {g.get('Name', 'Unknown')}",
-            skip_keys={'DeviceID', 'Name'},
-            alert_rules={'Temperature': self._temp_alert_color},
+            key_fn=lambda gpu: gpu.device_id or gpu.name or "gpu-error",
+            title_fn=lambda gpu, i: f"GPU {i + 1}: {gpu.name or 'Unknown'}",
+            rows_fn=lambda gpu: gpu.metric_rows(),
+            alert_rules={"Temperature": self._temp_alert_color},
         )
 
-        self._update_device_section(
+        self._update_typed_device_section(
             container=self.storage_container,
-            items=disks,
+            items=disk_partitions,
             cache=self.disk_widgets,
-            key_fn=lambda d: d.get('Mountpoint', ''),
-            title_fn=lambda d, i: f"{d.get('Device', '?')} ({d.get('Mountpoint', '?')})",
-            skip_keys={'Device', 'Mountpoint'},
+            key_fn=lambda disk: disk.mountpoint or disk.device or "disk-error",
+            title_fn=lambda disk, i: f"{disk.device or '?'} ({disk.mountpoint or '?'})",
+            rows_fn=lambda disk: disk.metric_rows(),
         )
 
         # SMART — flat key→value (no nested dicts), use simpler path
-        current_smart_keys = list(smart.keys())
+        current_smart_keys = [smart_drive.label_and_value()[0] for smart_drive in smart_drives]
         if current_smart_keys != list(self.smart_widgets.keys()):
             for child in self.smart_frame.content.winfo_children():
                 child.destroy()
             self.smart_widgets = {}
-            for k, v in smart.items():
+            for smart_drive in smart_drives:
+                k, v = smart_drive.label_and_value()
                 r = InfoRow(self.smart_frame.content, k, str(v))
                 r.pack(fill="x", pady=2)
                 self.smart_widgets[k] = r
         else:
-            for k, v in smart.items():
+            for smart_drive in smart_drives:
+                k, v = smart_drive.label_and_value()
                 if k in self.smart_widgets:
                     self.smart_widgets[k].value.configure(text=str(v))
 
@@ -605,44 +601,23 @@ class App(ctk.CTk):
     # Generic device-section updater (eliminates GPU/Disk duplication)
     # ------------------------------------------------------------------
 
-    def _update_device_section(
+    def _update_typed_device_section(
         self,
         container: ctk.CTkFrame,
-        items: list[dict[str, str]],
+        items: list[Any],
         cache: dict[str, dict[str, InfoRow]],
-        key_fn: Callable[[dict[str, str]], str],
-        title_fn: Callable[[dict[str, str], int], str],
-        skip_keys: set[str] | None = None,
+        key_fn: Callable[[Any], str],
+        title_fn: Callable[[Any, int], str],
+        rows_fn: Callable[[Any], dict[str, str]],
         alert_rules: dict[str, Callable[[str], str | None]] | None = None,
     ) -> None:
-        """Compare *items* against *cache*; rebuild only when keys change.
-
-        Parameters
-        ----------
-        container:
-            Parent frame that holds SectionFrame children.
-        items:
-            Latest data from a diagnostic module.
-        cache:
-            Mutable dict ``{stable_id: {metric: InfoRow}}``.
-        key_fn:
-            Extracts a stable identifier from each item dict.
-        title_fn:
-            Produces the SectionFrame title ``(item, index) -> str``.
-        skip_keys:
-            Keys in item dict NOT rendered as rows (e.g. identifiers).
-        alert_rules:
-            Optional ``{metric_key: fn(value_str) -> color_or_None}`` for
-            conditional highlighting.
-        """
-        skip = skip_keys or set()
+        """Compare typed device items against cached widgets and rebuild when needed."""
         rules = alert_rules or {}
 
         current_sigs = [key_fn(item) for item in items]
         cached_sigs = list(cache.keys())
 
         if current_sigs != cached_sigs:
-            # Full rebuild
             for child in container.winfo_children():
                 child.destroy()
             cache.clear()
@@ -653,30 +628,26 @@ class App(ctk.CTk):
                 section.pack(fill="x", pady=10)
 
                 rows: dict[str, InfoRow] = {}
-                for k, v in item.items():
-                    if k not in skip:
-                        r = InfoRow(section.content, k, str(v))
-                        r.pack(fill="x", pady=2)
-                        rows[k] = r
-                        # Apply alert colour if rule matches
-                        color = rules.get(k, lambda _: None)(str(v))
-                        if color:
-                            r.value.configure(text_color=color)
+                for k, v in rows_fn(item).items():
+                    r = InfoRow(section.content, k, str(v))
+                    r.pack(fill="x", pady=2)
+                    rows[k] = r
+                    color = rules.get(k, lambda _: None)(str(v))
+                    if color:
+                        r.value.configure(text_color=color)
                 cache[sid] = rows
         else:
-            # In-place update
             for item in items:
                 sid = key_fn(item)
                 if sid in cache:
                     rows = cache[sid]
-                    for k, v in item.items():
+                    for k, v in rows_fn(item).items():
                         if k in rows:
                             rows[k].value.configure(text=str(v))
                             color = rules.get(k, lambda _: None)(str(v))
                             if color:
                                 rows[k].value.configure(text_color=color)
                             else:
-                                # Reset to default
                                 rows[k].value.configure(text_color=("gray10", "gray90"))
 
     # ------------------------------------------------------------------
@@ -725,31 +696,49 @@ class App(ctk.CTk):
 
                 # CPU
                 writer.writerow(["CPU", "Usage", self.cpu_usage_var.get()])
-                info = self.cpu_mod.get_cpu_info()
-                for k, v in info.items():
+                cpu_info = getattr(self, "_last_cpu_info", None)
+                if cpu_info is None:
+                    cpu_info = self.cpu_mod.get_cpu_details()
+                for k, v in cpu_info.as_rows().items():
                     writer.writerow(["CPU", k, v])
 
+                # System
+                board_info = getattr(self, "_last_board_info", None)
+                if board_info is None:
+                    board_info = self.board_mod.get_board_details()
+                for k, v in board_info.as_rows().items():
+                    writer.writerow(["System", k, v])
+
                 # RAM
-                ram = getattr(self, "_last_ram", self.ram_mod.get_ram_info())
-                for k, v in ram.items():
+                memory_stats = getattr(self, "_last_memory_stats", None)
+                if memory_stats is None:
+                    memory_stats = self.ram_mod.get_ram_stats()
+                for k, v in memory_stats.as_rows().items():
                     writer.writerow(["RAM", k, v])
 
                 # GPUs
-                gpus = getattr(self, "_last_gpus", self.gpu_mod.get_gpu_info())
-                for i, gpu in enumerate(gpus):
-                    for k, v in gpu.items():
+                gpu_devices = getattr(self, "_last_gpu_devices", None)
+                if gpu_devices is None:
+                    gpu_devices = self.gpu_mod.get_gpu_devices()
+                for i, gpu in enumerate(gpu_devices):
+                    for k, v in gpu.as_dict().items():
                         writer.writerow([f"GPU {i}", k, v])
 
                 # Disks
-                disks = getattr(self, "_last_disks", self.disk_mod.get_disk_partitions_and_usage())
-                for disk in disks:
-                    label = disk.get("Mountpoint", "?")
-                    for k, v in disk.items():
+                disk_partitions = getattr(self, "_last_disk_partitions", None)
+                if disk_partitions is None:
+                    disk_partitions = self.disk_mod.get_disk_partitions()
+                for disk in disk_partitions:
+                    label = disk.mountpoint or "?"
+                    for k, v in disk.as_dict().items():
                         writer.writerow([f"Disk {label}", k, v])
 
                 # SMART
-                smart = getattr(self, "_last_smart", self.disk_mod.get_smart_status())
-                for k, v in smart.items():
+                smart_drives = getattr(self, "_last_smart_drives", None)
+                if smart_drives is None:
+                    smart_drives = self.disk_mod.get_smart_drive_statuses()
+                for smart_drive in smart_drives:
+                    k, v = smart_drive.label_and_value()
                     writer.writerow(["SMART", k, v])
 
                 # Health Summary

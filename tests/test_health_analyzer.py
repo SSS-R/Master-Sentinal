@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'UnifiedDiagnostics'))
 
+from models.diagnostic_models import DiskPartition, GPUDevice, MemoryStats, SmartDriveStatus
 from services.health_analyzer import HealthAnalyzer
 
 
@@ -15,10 +16,10 @@ def test_analyzer_reports_healthy_system_when_no_issues_found():
 
     summary = analyzer.analyze(
         cpu_load=18.0,
-        ram={"Percentage": 42.0},
-        gpus=[{"Name": "RTX", "Temperature": "65 C"}],
-        disks=[{"Mountpoint": "C:\\", "Percent": "55%"}],
-        smart={"disk0": "Samsung SSD - OK"},
+        ram=MemoryStats("16.00 GB", "9.00 GB", "7.00 GB", 42.0),
+        gpus=[GPUDevice(name="RTX", temperature_text="65 C")],
+        disks=[DiskPartition(mountpoint="C:\\", percent_text="55%")],
+        smart=[SmartDriveStatus(key="disk0", display_text="Samsung SSD - OK")],
     )
 
     assert summary.overall_status == "ok"
@@ -31,10 +32,10 @@ def test_analyzer_flags_multiple_problem_types():
 
     summary = analyzer.analyze(
         cpu_load=97.0,
-        ram={"Percentage": 92.0},
-        gpus=[{"Name": "RTX", "Temperature": "91 C"}],
-        disks=[{"Mountpoint": "C:\\", "Percent": "96%"}],
-        smart={"disk0": "Samsung SSD - Pred Fail"},
+        ram=MemoryStats("16.00 GB", "1.00 GB", "15.00 GB", 92.0),
+        gpus=[GPUDevice(name="RTX", temperature_text="91 C")],
+        disks=[DiskPartition(mountpoint="C:\\", percent_text="96%")],
+        smart=[SmartDriveStatus(key="disk0", display_text="Samsung SSD - Pred Fail")],
     )
 
     assert summary.overall_status == "critical"
@@ -51,10 +52,10 @@ def test_analyzer_surfaces_diagnostic_errors_as_warnings():
 
     summary = analyzer.analyze(
         cpu_load=20.0,
-        ram={"Percentage": 35.0},
-        gpus=[{"Error": "nvidia-smi missing"}],
+        ram=MemoryStats("16.00 GB", "10.00 GB", "6.00 GB", 35.0),
+        gpus=[GPUDevice(error_message="nvidia-smi missing")],
         disks=[],
-        smart={"Error": "WMI unavailable"},
+        smart=[SmartDriveStatus(error_message="WMI unavailable")],
     )
 
     assert summary.overall_status == "warning"

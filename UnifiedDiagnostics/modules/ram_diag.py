@@ -4,21 +4,27 @@ from __future__ import annotations
 
 import psutil
 
+from models.diagnostic_models import MemoryStats
+
 
 class RAMDiagnostic:
     """Gathers system memory (RAM) statistics."""
 
-    def get_ram_info(self) -> dict[str, str | float]:
-        """Return a dictionary of RAM statistics (Total, Available, Used, Percentage)."""
+    def get_ram_stats(self) -> MemoryStats:
+        """Return structured RAM statistics."""
         mem = psutil.virtual_memory()
 
         total_gb = mem.total / (1024 ** 3)
         available_gb = mem.available / (1024 ** 3)
         used_gb = mem.used / (1024 ** 3)
 
-        return {
-            'Total': f"{total_gb:.2f} GB",
-            'Available': f"{available_gb:.2f} GB",
-            'Used': f"{used_gb:.2f} GB",
-            'Percentage': mem.percent,
-        }
+        return MemoryStats(
+            total_gb_text=f"{total_gb:.2f} GB",
+            available_gb_text=f"{available_gb:.2f} GB",
+            used_gb_text=f"{used_gb:.2f} GB",
+            percent_used=mem.percent,
+        )
+
+    def get_ram_info(self) -> dict[str, str | float]:
+        """Return a legacy dictionary of RAM statistics."""
+        return self.get_ram_stats().as_dict()

@@ -17,6 +17,14 @@ from modules.cpu_diag import CPUDiagnostic
 class TestCPUDiagnostic:
     """Tests for CPUDiagnostic methods."""
 
+    def test_get_cpu_details_returns_typed_model(self, mock_wmi):
+        diag = CPUDiagnostic()
+        info = diag.get_cpu_details()
+        assert info.name == "Intel Core i7-12700K"
+        assert info.cores == 12
+        assert info.threads == 20
+        assert info.max_clock_speed_text == "3600 MHz"
+
     def test_get_cpu_info_returns_expected_keys(self, mock_wmi):
         diag = CPUDiagnostic()
         info = diag.get_cpu_info()

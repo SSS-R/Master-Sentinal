@@ -7,6 +7,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'UnifiedDiagnostics'))
 
+from models.diagnostic_models import DiskPartition, GPUDevice, MemoryStats, SmartDriveStatus
 from services.live_snapshot import LiveSnapshotCollector
 
 
@@ -27,6 +28,9 @@ class StubRAM:
             "Percentage": 50.0,
         }
 
+    def get_ram_stats(self):
+        return MemoryStats("16.00 GB", "8.00 GB", "8.00 GB", 50.0)
+
 
 class StubGPU:
     def __init__(self, payload):
@@ -34,6 +38,21 @@ class StubGPU:
 
     def get_gpu_info(self):
         return self.payload
+
+    def get_gpu_devices(self):
+        return [
+            GPUDevice(
+                device_id=gpu.get("DeviceID", ""),
+                name=gpu.get("Name", ""),
+                load_text=gpu.get("Load", "N/A"),
+                free_memory_text=gpu.get("Free Memory", "N/A"),
+                used_memory_text=gpu.get("Used Memory", "N/A"),
+                total_memory_text=gpu.get("Total Memory", "N/A"),
+                temperature_text=gpu.get("Temperature", "N/A"),
+                error_message=gpu.get("Error"),
+            )
+            for gpu in self.payload
+        ]
 
 
 class StubDisk:
@@ -46,6 +65,25 @@ class StubDisk:
 
     def get_smart_status(self):
         return self.smart
+
+    def get_disk_partitions(self):
+        return [
+            DiskPartition(
+                device=disk.get("Device", ""),
+                mountpoint=disk.get("Mountpoint", ""),
+                total_text=disk.get("Total", "N/A"),
+                used_text=disk.get("Used", "N/A"),
+                free_text=disk.get("Free", "N/A"),
+                percent_text=disk.get("Percent", "N/A"),
+                error_message=disk.get("Error"),
+            )
+            for disk in self.partitions
+        ]
+
+    def get_smart_drive_statuses(self):
+        if "Error" in self.smart:
+            return [SmartDriveStatus(error_message=self.smart["Error"])]
+        return [SmartDriveStatus(key=key, display_text=value) for key, value in self.smart.items()]
 
 
 def test_collect_formats_dashboard_summary_for_healthy_devices():
@@ -63,6 +101,9 @@ def test_collect_formats_dashboard_summary_for_healthy_devices():
     assert snapshot.summary.gpu_status_text == "1 GPU"
     assert snapshot.summary.disk_status_text == "1 Partition"
     assert snapshot.health_summary.overall_status == "ok"
+    assert snapshot.memory_stats.percent_used == 50.0
+    assert snapshot.gpu_devices[0].name == "RTX"
+    assert snapshot.disk_partitions[0].mountpoint == "C:\\"
 
 
 def test_collect_marks_device_summary_unavailable_on_errors():
@@ -78,3 +119,5 @@ def test_collect_marks_device_summary_unavailable_on_errors():
     assert snapshot.summary.gpu_status_text == "Unavailable"
     assert snapshot.summary.disk_status_text == "Unavailable"
     assert snapshot.health_summary.overall_status == "warning"
+    assert snapshot.gpu_devices[0].is_error is True
+    assert snapshot.disk_partitions[0].is_error is True

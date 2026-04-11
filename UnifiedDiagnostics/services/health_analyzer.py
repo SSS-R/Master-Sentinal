@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from models.diagnostic_models import DiskPartition, GPUDevice, MemoryStats, SmartDriveStatus
 from models.health_models import HealthFinding, HealthSummary
 
 
@@ -11,10 +12,10 @@ class HealthAnalyzer:
     def analyze(
         self,
         cpu_load: float,
-        ram: dict[str, object],
-        gpus: list[dict[str, str]],
-        disks: list[dict[str, str]],
-        smart: dict[str, str],
+        ram: MemoryStats,
+        gpus: list[GPUDevice],
+        disks: list[DiskPartition],
+        smart: list[SmartDriveStatus],
     ) -> HealthSummary:
         """Return a diagnosis summary for the current live snapshot."""
         findings: list[HealthFinding] = []
@@ -57,31 +58,32 @@ class HealthAnalyzer:
 
     def _collect_module_errors(
         self,
-        gpus: list[dict[str, str]],
-        disks: list[dict[str, str]],
-        smart: dict[str, str],
+        gpus: list[GPUDevice],
+        disks: list[DiskPartition],
+        smart: list[SmartDriveStatus],
     ) -> list[HealthFinding]:
         findings: list[HealthFinding] = []
 
         for label, items in (("GPU", gpus), ("Disk", disks)):
             for item in items:
-                if "Error" in item:
+                if item.is_error:
                     findings.append(
                         HealthFinding(
                             title=f"{label} diagnostics unavailable",
-                            message=item["Error"],
+                            message=item.error_message or "Unknown error",
                             severity="warning",
                         )
                     )
 
-        if "Error" in smart:
-            findings.append(
-                HealthFinding(
-                    title="SMART diagnostics unavailable",
-                    message=smart["Error"],
-                    severity="warning",
+        for smart_drive in smart:
+            if smart_drive.is_error:
+                findings.append(
+                    HealthFinding(
+                        title="SMART diagnostics unavailable",
+                        message=smart_drive.error_message or "Unknown error",
+                        severity="warning",
+                    )
                 )
-            )
 
         return findings
 
@@ -104,8 +106,8 @@ class HealthAnalyzer:
             ]
         return []
 
-    def _analyze_ram(self, ram: dict[str, object]) -> list[HealthFinding]:
-        percent = self._coerce_float(ram.get("Percentage"))
+    def _analyze_ram(self, ram: MemoryStats) -> list[HealthFinding]:
+        percent = self._coerce_float(ram.percent_used)
         if percent is None:
             return []
         if percent >= 90:
@@ -126,11 +128,11 @@ class HealthAnalyzer:
             ]
         return []
 
-    def _analyze_gpus(self, gpus: list[dict[str, str]]) -> list[HealthFinding]:
+    def _analyze_gpus(self, gpus: list[GPUDevice]) -> list[HealthFinding]:
         findings: list[HealthFinding] = []
         for gpu in gpus:
-            temp = self._parse_temperature(gpu.get("Temperature"))
-            name = gpu.get("Name", "GPU")
+            temp = self._parse_temperature(gpu.temperature_text)
+            name = gpu.name or "GPU"
             if temp is None:
                 continue
             if temp >= 90:
@@ -151,14 +153,14 @@ class HealthAnalyzer:
                 )
         return findings
 
-    def _analyze_disks(self, disks: list[dict[str, str]]) -> list[HealthFinding]:
+    def _analyze_disks(self, disks: list[DiskPartition]) -> list[HealthFinding]:
         findings: list[HealthFinding] = []
         for disk in disks:
-            percent_used = self._parse_percent(disk.get("Percent"))
+            percent_used = self._parse_percent(disk.percent_text)
             if percent_used is None:
                 continue
 
-            label = disk.get("Mountpoint", disk.get("Device", "Disk"))
+            label = disk.mountpoint or disk.device or "Disk"
             if percent_used >= 95:
                 findings.append(
                     HealthFinding(
@@ -177,12 +179,13 @@ class HealthAnalyzer:
                 )
         return findings
 
-    def _analyze_smart(self, smart: dict[str, str]) -> list[HealthFinding]:
+    def _analyze_smart(self, smart: list[SmartDriveStatus]) -> list[HealthFinding]:
         findings: list[HealthFinding] = []
-        for key, value in smart.items():
-            if key == "Error":
+        for smart_drive in smart:
+            if smart_drive.is_error:
                 continue
 
+            value = smart_drive.display_text
             normalized = value.lower()
             if "pred fail" in normalized or "fail" in normalized:
                 findings.append(

@@ -16,6 +16,19 @@ from modules.disk_diag import DiskDiagnostic
 class TestDiskDiagnostic:
     """Tests for DiskDiagnostic methods."""
 
+    def test_get_disk_partitions_returns_typed_models(self, mock_psutil):
+        diag = DiskDiagnostic()
+        disks = diag.get_disk_partitions()
+        assert len(disks) == 1
+        assert disks[0].device == "C:\\"
+        assert disks[0].mountpoint == "C:\\"
+
+    def test_get_smart_drive_statuses_returns_typed_models(self, mock_wmi):
+        diag = DiskDiagnostic()
+        smart = diag.get_smart_drive_statuses()
+        assert len(smart) >= 1
+        assert smart[0].key == "\\\\.\\PHYSICALDRIVE0"
+
     def test_get_disk_partitions_returns_list(self, mock_psutil):
         diag = DiskDiagnostic()
         disks = diag.get_disk_partitions_and_usage()

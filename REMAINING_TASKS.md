@@ -1,0 +1,117 @@
+# Remaining Tasks
+
+This document tracks the major work still left for `Master Sentinal` before it is polished as a reliable open source PC diagnostics application.
+
+## Current Priorities
+
+### 1. Finish the typed-data refactor
+
+- [x] Make GPU collection use `GPUDevice` as the primary implementation instead of collecting dicts first.
+- [x] Make disk collection use `DiskPartition` and `SmartDriveStatus` as the primary implementation instead of converting from dicts.
+- [x] Reduce legacy `get_*_info()` dict methods to thin compatibility wrappers only.
+- [x] Add typed models for CPU info, board info, and full scan results.
+- [ ] Remove remaining string-key assumptions from the UI and services. Live snapshot, dashboard, static CPU/board, and CSV export paths are typed; legacy callers still need review.
+
+### 2. Improve diagnostics depth
+
+- Add Windows Update health checks.
+- Add Event Viewer critical error summary.
+- Add Reliability Monitor / crash-history summary.
+- Add network diagnostics: adapter state, DNS, gateway, internet reachability.
+- Add storage diagnostics beyond basic SMART display: warning extraction, temperature if available, drive type.
+- Add security diagnostics: Defender status, firewall status, BitLocker status.
+- Add startup-impact and background-service checks.
+
+### 3. Turn metrics into clearer diagnosis
+
+- Add a health score or severity rollup for the whole system.
+- Add recommended actions for each finding.
+- Distinguish between transient load and persistent problems.
+- Add “unsupported” vs “error” vs “warning” states more explicitly.
+- Detect likely false positives for laptops vs desktops.
+
+## UI Tasks
+
+### Dashboard
+
+- Replace encoded/misaligned text artifacts in the UI.
+- Show health findings with badges, icons, or stronger severity styling.
+- Add empty states for unavailable diagnostics instead of generic placeholders.
+- Add loading states for first snapshot collection.
+- Improve spacing and responsiveness for smaller screens.
+
+### Full Scan
+
+- Show scan duration and progress more clearly.
+- Add richer scan result messages instead of truncating long output to `OK`.
+- Save detailed logs for each scan task.
+- Group scan tools by category: system repair, storage, power, advanced tools.
+- Add confirmation text for risky tools like Driver Verifier.
+
+### Reports
+
+- Add HTML report export.
+- Add JSON export for bug reports and community issue templates.
+- Include app version, timestamp, OS version, and privilege level in exports.
+- Include health findings and recommended actions in a cleaner format.
+
+## Reliability Tasks
+
+- Add structured logging instead of `print(...)`.
+- Add a dedicated error-reporting path for diagnostics that fail.
+- Ensure every background task has safe shutdown behavior.
+- Add timeout handling around shell-based diagnostics where appropriate.
+- Review WMI and subprocess failure handling for clearer user-facing messages.
+
+## Testing Tasks
+
+- Restore a working Python environment for local test runs.
+- Add tests for board diagnostics.
+- Add more tests for GPU collection paths, including WMI fallback.
+- Add tests for typed disk and SMART model conversion.
+- Add tests for the Tkinter update path where practical.
+- Add regression tests for the health analyzer rules.
+- Add CI so pull requests run tests automatically.
+
+## Build And Packaging Tasks
+
+- Fix the broken local virtual environment in the repository.
+- Remove machine-specific assumptions from packaging artifacts.
+- Clean up the PyInstaller flow so contributors can build on their own machines.
+- Separate runtime, development, and build dependencies.
+- Remove unused dependencies if they are no longer needed.
+- Add an app icon and version metadata to the build output.
+
+## Open Source Readiness
+
+- Clean the README encoding issues.
+- Replace placeholder repository/user information in docs.
+- Add screenshots or GIFs.
+- Add contribution guidelines (`CONTRIBUTING.md`).
+- Add an issue template and pull request template.
+- Add a code of conduct.
+- Document supported Windows versions and permissions requirements.
+- Document which diagnostics are safe, risky, or reboot-triggering.
+
+## Nice Next Features
+
+- Background monitoring history graphs.
+- Optional health alerts for high temperature or low disk space.
+- Scan presets: quick, standard, deep, advanced.
+- Save and compare snapshots over time.
+- Portable issue bundle export for support/community debugging.
+
+## Known Blockers
+
+- The local Python environment is currently not usable for reliable test execution.
+- Some UI text still contains encoding artifacts.
+- Several diagnostics still rely on legacy dict payloads internally.
+
+## Suggested Order
+
+1. Fix the Python environment and test execution.
+2. Finish the typed-data refactor in GPU and disk modules.
+3. Clean README/build/package setup for contributor use.
+4. Expand diagnostics coverage.
+5. Improve report quality and health recommendations.
+6. Add CI and open source contribution scaffolding.

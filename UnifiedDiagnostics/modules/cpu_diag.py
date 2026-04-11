@@ -1,4 +1,4 @@
-"""CPU diagnostics — static info and real-time usage via psutil / WMI."""
+"""CPU diagnostics - static info and real-time usage via psutil / WMI."""
 
 from __future__ import annotations
 
@@ -6,25 +6,31 @@ import psutil
 import wmi
 import pythoncom
 
+from models.diagnostic_models import CPUInfo
+
 
 class CPUDiagnostic:
     """Gathers CPU information and live usage metrics."""
 
-    def get_cpu_info(self) -> dict[str, str | int]:
-        """Return static CPU information (name, cores, threads, clock speed)."""
+    def get_cpu_details(self) -> CPUInfo:
+        """Return structured static CPU information."""
         try:
             pythoncom.CoInitialize()
             c = wmi.WMI()
-            cpu_info: dict[str, str | int] = {}
             for processor in c.Win32_Processor():
-                cpu_info['Name'] = processor.Name
-                cpu_info['Cores'] = processor.NumberOfCores
-                cpu_info['Threads'] = processor.NumberOfLogicalProcessors
-                cpu_info['MaxClockSpeed'] = f"{processor.MaxClockSpeed} MHz"
-                break  # Assume single socket
-            return cpu_info
+                return CPUInfo(
+                    name=processor.Name,
+                    cores=processor.NumberOfCores,
+                    threads=processor.NumberOfLogicalProcessors,
+                    max_clock_speed_text=f"{processor.MaxClockSpeed} MHz",
+                )
+            return CPUInfo()
         except Exception as e:
-            return {'Error': str(e)}
+            return CPUInfo(error_message=str(e))
+
+    def get_cpu_info(self) -> dict[str, str | int]:
+        """Return the legacy dict representation expected by older callers."""
+        return self.get_cpu_details().as_dict()
 
     def get_cpu_usage(self) -> float:
         """Return overall CPU usage percentage (non-blocking)."""

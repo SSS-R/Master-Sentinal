@@ -7,31 +7,66 @@ import platform
 import pythoncom
 import wmi
 
+from models.diagnostic_models import BoardInfo
+
 
 class BoardDiagnostic:
     """Gathers motherboard, BIOS, and OS platform information."""
 
-    def get_board_info(self) -> dict[str, str]:
-        """Return a dictionary of motherboard, BIOS, and OS info."""
-        info: dict[str, str] = {
-            'System': platform.system(),
-            'Node Name': platform.node(),
-            'Release': platform.release(),
-            'Version': platform.version(),
-            'Machine': platform.machine(),
-        }
+    def get_board_details(self) -> BoardInfo:
+        """Return structured motherboard, BIOS, and OS platform information."""
+        info = BoardInfo(
+            system=platform.system(),
+            node_name=platform.node(),
+            release=platform.release(),
+            version=platform.version(),
+            machine=platform.machine(),
+        )
         try:
             pythoncom.CoInitialize()
             c = wmi.WMI()
             for board in c.Win32_BaseBoard():
-                info['Manufacturer'] = board.Manufacturer
-                info['Product'] = board.Product
-                info['SerialNumber'] = board.SerialNumber
+                info = BoardInfo(
+                    system=info.system,
+                    node_name=info.node_name,
+                    release=info.release,
+                    version=info.version,
+                    machine=info.machine,
+                    manufacturer=board.Manufacturer,
+                    product=board.Product,
+                    serial_number=board.SerialNumber,
+                    bios_version=info.bios_version,
+                )
                 break
 
             for bios in c.Win32_BIOS():
-                info['BIOS Version'] = bios.SMBIOSBIOSVersion
+                info = BoardInfo(
+                    system=info.system,
+                    node_name=info.node_name,
+                    release=info.release,
+                    version=info.version,
+                    machine=info.machine,
+                    manufacturer=info.manufacturer,
+                    product=info.product,
+                    serial_number=info.serial_number,
+                    bios_version=bios.SMBIOSBIOSVersion,
+                )
                 break
         except Exception as e:
-            info['Error'] = str(e)
+            return BoardInfo(
+                system=info.system,
+                node_name=info.node_name,
+                release=info.release,
+                version=info.version,
+                machine=info.machine,
+                manufacturer=info.manufacturer,
+                product=info.product,
+                serial_number=info.serial_number,
+                bios_version=info.bios_version,
+                error_message=str(e),
+            )
         return info
+
+    def get_board_info(self) -> dict[str, str]:
+        """Return the legacy dict representation expected by older callers."""
+        return self.get_board_details().as_dict()

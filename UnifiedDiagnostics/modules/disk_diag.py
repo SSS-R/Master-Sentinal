@@ -1,4 +1,4 @@
-"""Disk diagnostics — partition usage and SMART status via psutil / WMI."""
+"""Disk diagnostics - partition usage and SMART status via psutil / WMI."""
 
 from __future__ import annotations
 
@@ -6,42 +6,54 @@ import psutil
 import pythoncom
 import wmi
 
+from models.diagnostic_models import DiskPartition, SmartDriveStatus
+
 
 class DiskDiagnostic:
     """Gathers disk partition usage and SMART health information."""
 
-    def get_disk_partitions_and_usage(self) -> list[dict[str, str]]:
-        """Return a list of dicts with usage stats per partition."""
-        disks: list[dict[str, str]] = []
+    def get_disk_partitions(self) -> list[DiskPartition]:
+        """Return structured partition usage stats."""
+        disks: list[DiskPartition] = []
         try:
             partitions = psutil.disk_partitions()
             for partition in partitions:
                 try:
                     usage = psutil.disk_usage(partition.mountpoint)
-                    disks.append({
-                        'Device': partition.device,
-                        'Mountpoint': partition.mountpoint,
-                        'Total': f"{usage.total / (1024**3):.2f} GB",
-                        'Used': f"{usage.used / (1024**3):.2f} GB",
-                        'Free': f"{usage.free / (1024**3):.2f} GB",
-                        'Percent': f"{usage.percent}%",
-                    })
+                    disks.append(
+                        DiskPartition(
+                            device=partition.device,
+                            mountpoint=partition.mountpoint,
+                            total_text=f"{usage.total / (1024**3):.2f} GB",
+                            used_text=f"{usage.used / (1024**3):.2f} GB",
+                            free_text=f"{usage.free / (1024**3):.2f} GB",
+                            percent_text=f"{usage.percent}%",
+                        )
+                    )
                 except PermissionError:
                     continue
         except Exception as e:
-            disks.append({'Error': str(e)})
+            disks.append(DiskPartition(error_message=str(e)))
         return disks
 
-    def get_smart_status(self) -> dict[str, str]:
-        """Return SMART status per physical drive (keyed by DeviceID for stability)."""
-        status: dict[str, str] = {}
+    def get_smart_drive_statuses(self) -> list[SmartDriveStatus]:
+        """Return structured SMART status per physical drive."""
+        statuses: list[SmartDriveStatus] = []
         try:
             pythoncom.CoInitialize()
             c = wmi.WMI()
             for drive in c.Win32_DiskDrive():
                 key = drive.DeviceID or drive.Caption
-                display = f"{drive.Caption} — {drive.Status}"
-                status[key] = display
+                display = f"{drive.Caption} - {drive.Status}"
+                statuses.append(SmartDriveStatus(key=key, display_text=display))
         except Exception as e:
-            status['Error'] = str(e)
-        return status
+            statuses.append(SmartDriveStatus(error_message=str(e)))
+        return statuses
+
+    def get_disk_partitions_and_usage(self) -> list[dict[str, str]]:
+        """Return the legacy dict representation expected by older callers."""
+        return [disk.as_dict() for disk in self.get_disk_partitions()]
+
+    def get_smart_status(self) -> dict[str, str]:
+        """Return the legacy dict representation expected by older callers."""
+        return dict(smart_drive.as_pair() for smart_drive in self.get_smart_drive_statuses())

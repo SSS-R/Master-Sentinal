@@ -1,4 +1,4 @@
-"""GPU diagnostics — NVIDIA-SMI with WMI fallback."""
+"""GPU diagnostics - NVIDIA-SMI with WMI fallback."""
 
 from __future__ import annotations
 
@@ -8,45 +8,46 @@ import subprocess
 import pythoncom
 import wmi
 
+from models.diagnostic_models import GPUDevice
+
 
 class GPUDiagnostic:
     """Gathers GPU information using nvidia-smi (preferred) or WMI."""
 
-    def get_gpu_info(self) -> list[dict[str, str]]:
-        """Return a list of dicts, one per GPU, with load/memory/temp data.
-
-        Each dict contains a stable ``DeviceID`` key suitable for widget caching.
-        """
-        gpus: list[dict[str, str]] = []
+    def get_gpu_devices(self) -> list[GPUDevice]:
+        """Return structured GPU devices with load, memory, and temperature data."""
+        gpus: list[GPUDevice] = []
 
         # 1. Try NVIDIA-SMI with hidden console window
         try:
             startupinfo = None
-            if os.name == 'nt':
+            if os.name == "nt":
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
             cmd = [
-                'nvidia-smi',
-                '--query-gpu=gpu_uuid,name,utilization.gpu,memory.free,memory.used,memory.total,temperature.gpu',
-                '--format=csv,noheader,nounits',
+                "nvidia-smi",
+                "--query-gpu=gpu_uuid,name,utilization.gpu,memory.free,memory.used,memory.total,temperature.gpu",
+                "--format=csv,noheader,nounits",
             ]
 
             output = subprocess.check_output(cmd, startupinfo=startupinfo, stderr=subprocess.DEVNULL)
-            lines = output.decode('utf-8').strip().split('\n')
+            lines = output.decode("utf-8").strip().split("\n")
 
             for line in lines:
-                vals = [x.strip() for x in line.split(',')]
+                vals = [x.strip() for x in line.split(",")]
                 if len(vals) >= 7:
-                    gpus.append({
-                        'DeviceID': vals[0],   # GPU UUID — stable identifier
-                        'Name': vals[1],
-                        'Load': f"{vals[2]}%",
-                        'Free Memory': f"{vals[3]}MB",
-                        'Used Memory': f"{vals[4]}MB",
-                        'Total Memory': f"{vals[5]}MB",
-                        'Temperature': f"{vals[6]} C",
-                    })
+                    gpus.append(
+                        GPUDevice(
+                            device_id=vals[0],
+                            name=vals[1],
+                            load_text=f"{vals[2]}%",
+                            free_memory_text=f"{vals[3]}MB",
+                            used_memory_text=f"{vals[4]}MB",
+                            total_memory_text=f"{vals[5]}MB",
+                            temperature_text=f"{vals[6]} C",
+                        )
+                    )
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
         except Exception:
@@ -65,16 +66,19 @@ class GPUDiagnostic:
                     except Exception:
                         pass
 
-                    gpus.append({
-                        'DeviceID': gpu.PNPDeviceID or gpu.DeviceID or gpu.Name,
-                        'Name': gpu.Name,
-                        'Load': "N/A (WMI)",
-                        'Free Memory': "N/A",
-                        'Used Memory': "N/A",
-                        'Total Memory': ram_mb,
-                        'Temperature': "N/A",
-                    })
+                    gpus.append(
+                        GPUDevice(
+                            device_id=gpu.PNPDeviceID or gpu.DeviceID or gpu.Name,
+                            name=gpu.Name,
+                            load_text="N/A (WMI)",
+                            total_memory_text=ram_mb,
+                        )
+                    )
             except Exception as e:
-                gpus.append({'Error': str(e)})
+                gpus.append(GPUDevice(error_message=str(e)))
 
         return gpus
+
+    def get_gpu_info(self) -> list[dict[str, str]]:
+        """Return the legacy dict representation expected by older callers."""
+        return [gpu.as_dict() for gpu in self.get_gpu_devices()]
