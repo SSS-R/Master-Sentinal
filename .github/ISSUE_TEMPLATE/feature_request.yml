@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest an improvement or new diagnostic capability
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What user need or pain point should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the feature or workflow you want.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: risk
+    attributes:
+      label: Safety or permission notes
+      description: Mention if the idea needs admin rights, a reboot, or could alter system state.

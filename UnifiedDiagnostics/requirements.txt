@@ -1,7 +1,1 @@
-customtkinter
-psutil
-wmi
-GPUtil
-pillow
-pywin32
-pyinstaller
+-r ../requirements-runtime.txt

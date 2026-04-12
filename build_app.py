@@ -1,34 +1,37 @@
-"""Build script for Master Sentinal — creates a single-file .exe via PyInstaller."""
+"""Build Master Sentinal into a Windows executable with PyInstaller."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
 
 import PyInstaller.__main__
-import customtkinter
-import os
-import shutil
 
-# Get CustomTkinter path for data inclusion
-ctk_path = os.path.dirname(customtkinter.__file__)
 
-print(f"CustomTkinter path: {ctk_path}")
+ROOT = Path(__file__).resolve().parent
+DIST_DIR = ROOT / "dist"
+BUILD_DIR = ROOT / "build"
+SPEC_PATH = ROOT / "Master Sentinal.spec"
+OUTPUT_PATH = DIST_DIR / "Master Sentinal.exe"
 
-# Clean previous build
-if os.path.exists('dist'):
-    shutil.rmtree('dist')
-if os.path.exists('build'):
-    shutil.rmtree('build')
 
-PyInstaller.__main__.run([
-    'UnifiedDiagnostics/main.py',
-    '--name=Master Sentinal',
-    '--noconfirm',
-    '--windowed',
-    '--onefile',
-    f'--add-data={ctk_path};customtkinter',
-    # TODO: Replace --icon=NONE with a proper .ico file when one is available.
-    #       e.g. '--icon=assets/icon.ico'
-    '--icon=NONE',
-    '--clean',
-    '--uac-admin',
-])
+def main() -> None:
+    """Clean previous artifacts and run the PyInstaller spec."""
+    for directory in (DIST_DIR, BUILD_DIR):
+        if directory.exists():
+            shutil.rmtree(directory)
 
-print("Build complete. Please check the 'dist' folder (NOT 'build').")
-print("Executable: dist/Master Sentinal/Master Sentinal.exe")
+    PyInstaller.__main__.run([
+        str(SPEC_PATH),
+        "--noconfirm",
+        "--clean",
+    ])
+
+    if OUTPUT_PATH.exists():
+        print(f"Build complete: {OUTPUT_PATH}")
+    else:
+        print("Build finished, but the executable was not found in dist.")
+
+
+if __name__ == "__main__":
+    main()

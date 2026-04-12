@@ -1,0 +1,6 @@
+customtkinter
+psutil
+wmi
+GPUtil
+pillow
+pywin32

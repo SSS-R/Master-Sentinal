@@ -972,7 +972,7 @@ class App(ctk.CTk):
                 ("JSON files", "*.json"),
                 ("All files", "*.*"),
             ],
-            initialfile=f"MasterSentinal_Report_{datetime.now():%Y%m%d_%H%M%S}.csv",
+            initialfile=f"Master_Sentinal_Report_{datetime.now():%Y%m%d_%H%M%S}.csv",
         )
         if not path:
             return

@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a defect in the app or build flow
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the shortest reliable reproduction you can.
+      placeholder: |
+        1. Launch the app
+        2. Open Full Scan
+        3. Start the routine scan
+        4. Observe the problem
+    validations:
+      required: true
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: elevated
+    attributes:
+      label: Was the app run as administrator?
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Logs or report excerpts
+      description: Paste relevant lines from logs/master_sentinal.log or attach a JSON/HTML report.

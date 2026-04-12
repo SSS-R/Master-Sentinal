@@ -65,33 +65,33 @@ This document tracks the major work still left for `Master Sentinal` before it i
 
 ## Testing Tasks
 
-- Restore a working Python environment for local test runs.
-- Add tests for board diagnostics.
-- Add more tests for GPU collection paths, including WMI fallback.
-- Add tests for typed disk and SMART model conversion.
-- Add tests for the Tkinter update path where practical.
-- Add regression tests for the health analyzer rules.
-- Add CI so pull requests run tests automatically.
+- [x] Restore a working Python environment for local test runs.
+- [x] Add tests for board diagnostics.
+- [x] Add more tests for GPU collection paths, including WMI fallback.
+- [x] Add tests for typed disk and SMART model conversion.
+- [x] Add tests for the Tkinter update path where practical.
+- [x] Add regression tests for the health analyzer rules.
+- [x] Add CI so pull requests run tests automatically.
 
 ## Build And Packaging Tasks
 
-- Fix the broken local virtual environment in the repository.
-- Remove machine-specific assumptions from packaging artifacts.
-- Clean up the PyInstaller flow so contributors can build on their own machines.
-- Separate runtime, development, and build dependencies.
-- Remove unused dependencies if they are no longer needed.
-- Add an app icon and version metadata to the build output.
+- [x] Fix the broken local virtual environment in the repository.
+- [x] Remove machine-specific assumptions from packaging artifacts.
+- [x] Clean up the PyInstaller flow so contributors can build on their own machines.
+- [x] Separate runtime, development, and build dependencies.
+- [x] Remove unused dependencies if they are no longer needed.
+- [x] Add an app icon and version metadata to the build output.
 
 ## Open Source Readiness
 
-- Clean the README encoding issues.
-- Replace placeholder repository/user information in docs.
-- Add screenshots or GIFs.
-- Add contribution guidelines (`CONTRIBUTING.md`).
-- Add an issue template and pull request template.
-- Add a code of conduct.
-- Document supported Windows versions and permissions requirements.
-- Document which diagnostics are safe, risky, or reboot-triggering.
+- [x] Clean the README encoding issues.
+- [x] Replace placeholder repository/user information in docs.
+- [x] Add screenshots or GIFs.
+- [x] Add contribution guidelines (`CONTRIBUTING.md`).
+- [x] Add an issue template and pull request template.
+- [x] Add a code of conduct.
+- [x] Document supported Windows versions and permissions requirements.
+- [x] Document which diagnostics are safe, risky, or reboot-triggering.
 
 ## Nice Next Features
 
@@ -103,8 +103,6 @@ This document tracks the major work still left for `Master Sentinal` before it i
 
 ## Known Blockers
 
-- The local Python environment is currently not usable for reliable test execution.
-- Some UI text still contains encoding artifacts.
 - Several diagnostics still rely on legacy dict payloads internally.
 
 ## Suggested Order
