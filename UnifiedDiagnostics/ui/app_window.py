@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from tkinter import messagebox, filedialog
+from tkinter import TclError, filedialog, messagebox
 from typing import Any, Callable
 
 import customtkinter as ctk
@@ -30,6 +30,7 @@ from modules.full_scan import FullScanDiagnostic
 from modules.gpu_diag import GPUDiagnostic
 from modules.ram_diag import RAMDiagnostic
 from services.full_scan_service import FullScanService, ScanTask
+from services.app_logging import get_logger
 from services.live_snapshot import DiagnosticSnapshot, LiveSnapshotCollector
 from services.report_exporter import write_csv_report, write_html_report, write_json_report
 from ui.components import InfoRow, MetricCard, SectionFrame
@@ -38,6 +39,8 @@ from ui.components import InfoRow, MetricCard, SectionFrame
 # Navigation items (order matters — rendered top to bottom)
 NAV_ITEMS: list[str] = ["Dashboard", "CPU", "Memory", "GPU", "Storage", "System"]
 NAV_SCAN_ITEM: str = "Full Scan"
+
+LOGGER = get_logger(__name__)
 
 
 class App(ctk.CTk):
@@ -111,6 +114,7 @@ class App(ctk.CTk):
         self.last_scan_started_at: datetime | None = None
         self.last_scan_finished_at: datetime | None = None
         self._active_scan_started_at = 0.0
+        self._background_threads: list[threading.Thread] = []
 
         # Dashboard string vars
         self.cpu_usage_var = ctk.StringVar(value="0%")
@@ -134,12 +138,28 @@ class App(ctk.CTk):
 
         # Monitoring thread (uses Event for clean shutdown)
         self._stop_event = threading.Event()
-        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self.monitor_thread.start()
+        self.monitor_thread = self._start_background_thread(self._monitor_loop)
 
     # ------------------------------------------------------------------
     # Navigation helpers
     # ------------------------------------------------------------------
+
+    def _start_background_thread(self, target: Callable[..., None], *args: Any) -> threading.Thread:
+        """Start and track a daemon background thread."""
+        thread = threading.Thread(target=target, args=args, daemon=True)
+        thread.start()
+        self._background_threads.append(thread)
+        return thread
+
+    def _safe_after(self, callback: Callable[[], None]) -> None:
+        """Schedule a UI callback unless shutdown is already in progress."""
+        if self._stop_event.is_set():
+            return
+        try:
+            if self.winfo_exists():
+                self.after(0, callback)
+        except (RuntimeError, TclError):
+            LOGGER.debug("Skipped UI callback during shutdown.")
 
     def _add_nav_button(self, name: str) -> None:
         """Create a sidebar button and register it in *nav_buttons*."""
@@ -432,11 +452,13 @@ class App(ctk.CTk):
         for lbl in self.scan_rows.values():
             lbl.configure(text="Pending", text_color="gray")
 
-        threading.Thread(
-            target=self._run_task_batch,
-            args=(self.check_list, self.scan_rows, self.start_scan_btn, "Start Health Scan"),
-            daemon=True,
-        ).start()
+        self._start_background_thread(
+            self._run_task_batch,
+            self.check_list,
+            self.scan_rows,
+            self.start_scan_btn,
+            "Start Health Scan",
+        )
 
     def start_advanced_task(self, task: ScanTask) -> None:
         """Run a single advanced task after explicit user confirmation."""
@@ -455,7 +477,7 @@ class App(ctk.CTk):
         button = self.advanced_scan_buttons[task.name]
         button.configure(state="disabled", text="Running...")
         self.advanced_scan_rows[task.name].configure(text="Running...", text_color="orange")
-        threading.Thread(target=self._run_single_task, args=(task,), daemon=True).start()
+        self._start_background_thread(self._run_single_task, task)
 
     def _run_task_batch(
         self,
@@ -467,6 +489,8 @@ class App(ctk.CTk):
         """Execute a group of checks sequentially in a background thread."""
         total = len(tasks)
         for index, task in enumerate(tasks, start=1):
+            if self._stop_event.is_set():
+                break
             self._ui_scan_progress(index - 1, total, "Running")
             self._ui_scan_status(row_map, task.name, "Running...", "orange")
             started = perf_counter()
@@ -483,15 +507,19 @@ class App(ctk.CTk):
             )
             self._ui_scan_progress(index, total, "Running")
 
+        if self._stop_event.is_set():
+            return
         self.last_scan_finished_at = datetime.now(timezone.utc)
         elapsed = perf_counter() - self._active_scan_started_at
-        self.after(0, lambda: self.scan_progress_var.set(f"Finished {total} of {total} checks"))
-        self.after(0, lambda: self.scan_duration_var.set(f"Completed in {elapsed:.1f}s"))
-        self.after(0, lambda: trigger_button.configure(state="normal", text=idle_text))
+        self._safe_after(lambda: self.scan_progress_var.set(f"Finished {total} of {total} checks"))
+        self._safe_after(lambda: self.scan_duration_var.set(f"Completed in {elapsed:.1f}s"))
+        self._safe_after(lambda: trigger_button.configure(state="normal", text=idle_text))
 
     def _run_single_task(self, task: ScanTask) -> None:
         """Execute one advanced task in a background thread."""
-        self.after(0, lambda: self.scan_progress_var.set(f"Running {task.name}"))
+        if self._stop_event.is_set():
+            return
+        self._safe_after(lambda: self.scan_progress_var.set(f"Running {task.name}"))
         started = perf_counter()
         try:
             success, output = task.runner()
@@ -510,9 +538,9 @@ class App(ctk.CTk):
         finally:
             elapsed = perf_counter() - started
             button = self.advanced_scan_buttons[task.name]
-            self.after(0, lambda: self.scan_progress_var.set(f"Finished {task.name}"))
-            self.after(0, lambda: self.scan_duration_var.set(f"Last advanced tool: {elapsed:.1f}s"))
-            self.after(0, lambda: button.configure(state="normal", text=task.button_text))
+            self._safe_after(lambda: self.scan_progress_var.set(f"Finished {task.name}"))
+            self._safe_after(lambda: self.scan_duration_var.set(f"Last advanced tool: {elapsed:.1f}s"))
+            self._safe_after(lambda: button.configure(state="normal", text=task.button_text))
 
     def _finalize_scan_status(
         self,
@@ -537,12 +565,16 @@ class App(ctk.CTk):
                 "log_message": result.log_message,
             }
         )
+        if result.success:
+            LOGGER.info("%s", result.log_message or f"[{result.task_name}] SUCCESS: {result.message}")
+        else:
+            LOGGER.warning("%s", result.log_message or f"[{result.task_name}] FAILED: {result.message}")
 
     def _ui_scan_progress(self, completed: int, total: int, prefix: str) -> None:
         """Thread-safe helper to update batch scan progress."""
         elapsed = perf_counter() - self._active_scan_started_at
-        self.after(0, lambda: self.scan_progress_var.set(f"{prefix} {completed} of {total} checks"))
-        self.after(0, lambda: self.scan_duration_var.set(f"Elapsed {elapsed:.1f}s"))
+        self._safe_after(lambda: self.scan_progress_var.set(f"{prefix} {completed} of {total} checks"))
+        self._safe_after(lambda: self.scan_duration_var.set(f"Elapsed {elapsed:.1f}s"))
 
     def _ui_scan_status(
         self,
@@ -552,7 +584,7 @@ class App(ctk.CTk):
         color: str,
     ) -> None:
         """Thread-safe helper to update a scan-row label."""
-        self.after(0, lambda: row_map[name].configure(text=text, text_color=color))
+        self._safe_after(lambda: row_map[name].configure(text=text, text_color=color))
 
     # ------------------------------------------------------------------
     # Real-time monitor
@@ -563,10 +595,13 @@ class App(ctk.CTk):
         while not self._stop_event.is_set():
             try:
                 snapshot = self.snapshot_collector.collect()
-                self.after(0, lambda current=snapshot: self._apply_snapshot(current))
+                self._safe_after(lambda current=snapshot: self._apply_snapshot(current))
 
             except Exception as e:
-                print(f"Error in monitor: {e}")
+                LOGGER.exception("Live monitor loop failed: %s", e)
+                self._safe_after(
+                    lambda: self.health_summary_var.set("Live monitoring hit an error. Check logs for details.")
+                )
 
             # Use Event.wait instead of time.sleep for clean cancellation
             self._stop_event.wait(UPDATE_INTERVAL_SEC)
@@ -587,6 +622,7 @@ class App(ctk.CTk):
         self._last_smart_drives = snapshot.smart_drives
         self._last_memory_stats = snapshot.memory_stats
         self._last_health_summary = snapshot.health_summary
+        self._last_diagnostic_report = snapshot.diagnostic_report
 
         self._update_health_summary(snapshot.health_summary)
         self._update_ui(
@@ -842,6 +878,7 @@ class App(ctk.CTk):
         disk_partitions = getattr(self, "_last_disk_partitions", None) or self.disk_mod.get_disk_partitions()
         smart_drives = getattr(self, "_last_smart_drives", None) or self.disk_mod.get_smart_drive_statuses()
         health_summary = getattr(self, "_last_health_summary", None)
+        diagnostic_report = getattr(self, "_last_diagnostic_report", None)
 
         metadata = {
             "app_name": WINDOW_TITLE,
@@ -896,6 +933,15 @@ class App(ctk.CTk):
                 "SMART": dict(smart_drive.label_and_value() for smart_drive in smart_drives),
             },
             "health": health_payload,
+            "diagnostic_report": [
+                {
+                    "source": issue.source,
+                    "category": issue.category,
+                    "message": issue.message,
+                    "severity": issue.severity,
+                }
+                for issue in diagnostic_report.entries()
+            ] if diagnostic_report is not None else [],
             "scan_logs": list(self.scan_logs),
         }
 
@@ -942,6 +988,7 @@ class App(ctk.CTk):
                 write_csv_report(path, payload)
             messagebox.showinfo("Export Complete", f"Report saved to:\n{path}")
         except Exception as e:
+            LOGGER.exception("Report export failed: %s", e)
             messagebox.showerror("Export Failed", str(e))
 
     # ------------------------------------------------------------------
@@ -951,6 +998,9 @@ class App(ctk.CTk):
     def on_closing(self) -> None:
         """Signal the monitor thread to stop and destroy the window."""
         self._stop_event.set()
+        for thread in list(self._background_threads):
+            if thread.is_alive() and thread is not threading.current_thread():
+                thread.join(timeout=0.2)
         self.destroy()
 
 

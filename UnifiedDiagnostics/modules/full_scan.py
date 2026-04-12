@@ -7,9 +7,22 @@ import os
 import subprocess
 from typing import Callable
 
+from services.app_logging import get_logger
+from services.diagnostic_runtime import friendly_exception_message
+
+
+LOGGER = get_logger(__name__)
+
 
 class FullScanDiagnostic:
     """Executes a sequence of Windows system-health diagnostic commands."""
+
+    SFC_TIMEOUT_SEC = 1800
+    DISM_TIMEOUT_SEC = 2400
+    CHKDSK_SCAN_TIMEOUT_SEC = 1200
+    CHKDSK_QUICK_TIMEOUT_SEC = 900
+    POWERCFG_TIMEOUT_SEC = 180
+    BATTERY_TIMEOUT_SEC = 120
 
     def is_admin(self) -> bool:
         """Return True if the current process has administrator privileges."""
@@ -21,6 +34,23 @@ class FullScanDiagnostic:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _creation_flags() -> int:
+        """Return flags that hide the console window on Windows."""
+        if os.name == "nt":
+            return subprocess.CREATE_NO_WINDOW
+        return 0
+
+    def _run_shell_command(self, cmd: list[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
+        """Run a shell command with a timeout and hidden window."""
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            creationflags=self._creation_flags(),
+        )
 
     @staticmethod
     def _parse_friendly_error(output: str) -> str:
@@ -64,11 +94,7 @@ class FullScanDiagnostic:
             return False, "Administrator privileges required."
 
         try:
-            result = subprocess.run(
-                ['sfc', '/scannow'],
-                capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = self._run_shell_command(['sfc', '/scannow'], self.SFC_TIMEOUT_SEC)
             if result.returncode == 0:
                 if "Windows Resource Protection did not find any integrity violations" in result.stdout:
                     return True, "No Integrity Violations"
@@ -77,8 +103,12 @@ class FullScanDiagnostic:
                 return True, "Scan Complete"
             output = result.stdout + (result.stderr or "")
             return False, self._parse_friendly_error(output)
+        except subprocess.TimeoutExpired as e:
+            LOGGER.warning("SFC timed out: %s", e)
+            return False, friendly_exception_message(e, "System File Checker")
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("SFC failed: %s", e)
+            return False, friendly_exception_message(e, "System File Checker")
 
     def run_dism(self) -> tuple[bool, str]:
         """Run DISM RestoreHealth."""
@@ -87,16 +117,17 @@ class FullScanDiagnostic:
 
         try:
             cmd = ['DISM', '/Online', '/Cleanup-Image', '/RestoreHealth']
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = self._run_shell_command(cmd, self.DISM_TIMEOUT_SEC)
             if result.returncode == 0:
                 return True, "Restore Operation Successful"
             output = result.stdout + (result.stderr or "")
             return False, self._parse_friendly_error(output)
+        except subprocess.TimeoutExpired as e:
+            LOGGER.warning("DISM timed out: %s", e)
+            return False, friendly_exception_message(e, "DISM image repair")
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("DISM failed: %s", e)
+            return False, friendly_exception_message(e, "DISM image repair")
 
     def run_chkdsk_scan(self) -> tuple[bool, str]:
         """Run CHKDSK in scan-only (online) mode."""
@@ -104,19 +135,19 @@ class FullScanDiagnostic:
             return False, "Administrator privileges required."
 
         try:
-            result = subprocess.run(
-                ['chkdsk', 'C:', '/scan'],
-                capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = self._run_shell_command(['chkdsk', 'C:', '/scan'], self.CHKDSK_SCAN_TIMEOUT_SEC)
             if result.returncode == 0:
                 if "found no problems" in result.stdout:
                     return True, "No Problems Found"
                 return True, "Scan Complete"
             output = result.stdout + (result.stderr or "")
             return False, self._parse_friendly_error(output)
+        except subprocess.TimeoutExpired as e:
+            LOGGER.warning("CHKDSK scan timed out: %s", e)
+            return False, friendly_exception_message(e, "Disk Check")
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("CHKDSK scan failed: %s", e)
+            return False, friendly_exception_message(e, "Disk Check")
 
     def run_chkdsk_quick(self) -> tuple[bool, str]:
         """Run CHKDSK in quick/perf mode."""
@@ -124,19 +155,19 @@ class FullScanDiagnostic:
             return False, "Administrator privileges required."
 
         try:
-            result = subprocess.run(
-                ['chkdsk', 'C:', '/scan', '/perf'],
-                capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = self._run_shell_command(['chkdsk', 'C:', '/scan', '/perf'], self.CHKDSK_QUICK_TIMEOUT_SEC)
             if result.returncode == 0:
                 if "found no problems" in result.stdout:
                     return True, "No Problems Found"
                 return True, "Quick Scan Complete"
             output = result.stdout + (result.stderr or "")
             return False, self._parse_friendly_error(output)
+        except subprocess.TimeoutExpired as e:
+            LOGGER.warning("Quick CHKDSK timed out: %s", e)
+            return False, friendly_exception_message(e, "Quick Disk Check")
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("Quick CHKDSK failed: %s", e)
+            return False, friendly_exception_message(e, "Quick Disk Check")
 
     def run_memory_diag(self) -> tuple[bool, str]:
         """Launch the Windows Memory Diagnostic scheduler (triggers reboot)."""
@@ -144,7 +175,8 @@ class FullScanDiagnostic:
             subprocess.Popen(['mdsched.exe'])
             return True, "Memory Diagnostic Launched"
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("Memory Diagnostic launch failed: %s", e)
+            return False, friendly_exception_message(e, "Memory Diagnostic")
 
     def run_power_diag(self) -> tuple[bool, str]:
         """Run Power Efficiency Diagnostics and return the report path."""
@@ -161,16 +193,17 @@ class FullScanDiagnostic:
                 except OSError:
                     pass
 
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = self._run_shell_command(cmd, self.POWERCFG_TIMEOUT_SEC)
             if result.returncode == 0:
                 return True, f"Report generated at {report_path}"
             output = result.stdout + (result.stderr or "")
             return False, self._parse_friendly_error(output)
+        except subprocess.TimeoutExpired as e:
+            LOGGER.warning("Power diagnostics timed out: %s", e)
+            return False, friendly_exception_message(e, "Power diagnostics")
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("Power diagnostics failed: %s", e)
+            return False, friendly_exception_message(e, "Power diagnostics")
 
     def run_battery_report(self) -> tuple[bool, str]:
         """Generate a battery report (laptops only)."""
@@ -187,17 +220,18 @@ class FullScanDiagnostic:
                 except OSError:
                     pass
 
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = self._run_shell_command(cmd, self.BATTERY_TIMEOUT_SEC)
             output = result.stdout + (result.stderr or "")
 
             if result.returncode == 0:
                 return True, f"Report generated at {report_path}"
             return False, self._parse_friendly_error(output)
+        except subprocess.TimeoutExpired as e:
+            LOGGER.warning("Battery report timed out: %s", e)
+            return False, friendly_exception_message(e, "Battery report")
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("Battery report failed: %s", e)
+            return False, friendly_exception_message(e, "Battery report")
 
     def run_driver_verifier(self) -> tuple[bool, str]:
         """Launch the Driver Verifier GUI."""
@@ -205,7 +239,8 @@ class FullScanDiagnostic:
             subprocess.Popen(['verifier', '/gui'])
             return True, "Driver Verifier GUI launched."
         except Exception as e:
-            return False, str(e)
+            LOGGER.warning("Driver Verifier launch failed: %s", e)
+            return False, friendly_exception_message(e, "Driver Verifier")
 
     # ------------------------------------------------------------------
     # Scan list

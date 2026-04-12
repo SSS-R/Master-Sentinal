@@ -57,11 +57,11 @@ This document tracks the major work still left for `Master Sentinal` before it i
 
 ## Reliability Tasks
 
-- Add structured logging instead of `print(...)`.
-- Add a dedicated error-reporting path for diagnostics that fail.
-- Ensure every background task has safe shutdown behavior.
-- Add timeout handling around shell-based diagnostics where appropriate.
-- Review WMI and subprocess failure handling for clearer user-facing messages.
+- [x] Add structured logging instead of `print(...)`.
+- [x] Add a dedicated error-reporting path for diagnostics that fail.
+- [x] Ensure every background task has safe shutdown behavior.
+- [x] Add timeout handling around shell-based diagnostics where appropriate.
+- [x] Review WMI and subprocess failure handling for clearer user-facing messages.
 
 ## Testing Tasks
 

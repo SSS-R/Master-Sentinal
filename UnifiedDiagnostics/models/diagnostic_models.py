@@ -504,6 +504,32 @@ class SystemFormFactor:
 
 
 @dataclass(frozen=True)
+class DiagnosticIssue:
+    """One structured diagnostic failure or degraded-collection entry."""
+
+    source: str = ""
+    category: str = ""
+    message: str = ""
+    severity: str = "warning"
+
+
+@dataclass(frozen=True)
+class DiagnosticReport:
+    """Structured report of diagnostic collection issues."""
+
+    issues: list[DiagnosticIssue] | None = None
+
+    def entries(self) -> list[DiagnosticIssue]:
+        """Return diagnostic issues without exposing an optional list."""
+        return self.issues or []
+
+    @property
+    def has_issues(self) -> bool:
+        """Return True when any diagnostic issues were recorded."""
+        return bool(self.entries())
+
+
+@dataclass(frozen=True)
 class MemoryStats:
     """Structured RAM statistics."""
 

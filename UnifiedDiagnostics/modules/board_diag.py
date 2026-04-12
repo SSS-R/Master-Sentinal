@@ -8,6 +8,11 @@ import pythoncom
 import wmi
 
 from models.diagnostic_models import BoardInfo
+from services.app_logging import get_logger
+from services.diagnostic_runtime import friendly_exception_message
+
+
+LOGGER = get_logger(__name__)
 
 
 class BoardDiagnostic:
@@ -53,6 +58,7 @@ class BoardDiagnostic:
                 )
                 break
         except Exception as e:
+            LOGGER.warning("Board diagnostics failed: %s", e)
             return BoardInfo(
                 system=info.system,
                 node_name=info.node_name,
@@ -63,7 +69,7 @@ class BoardDiagnostic:
                 product=info.product,
                 serial_number=info.serial_number,
                 bios_version=info.bios_version,
-                error_message=str(e),
+                error_message=friendly_exception_message(e, "Board diagnostics"),
             )
         return info
 

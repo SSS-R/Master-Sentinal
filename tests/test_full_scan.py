@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import os
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -85,6 +86,14 @@ class TestFullScanChecks:
         mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         ok, msg = self.diag.run_dism()
         assert ok
+
+    @patch.object(FullScanDiagnostic, 'is_admin', return_value=True)
+    @patch("subprocess.run")
+    def test_dism_timeout_returns_friendly_message(self, mock_run, _):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="DISM", timeout=2400)
+        ok, msg = self.diag.run_dism()
+        assert not ok
+        assert "timed out" in msg.lower()
 
     def test_get_full_scan_list_returns_tuples(self):
         items = self.diag.get_full_scan_list()

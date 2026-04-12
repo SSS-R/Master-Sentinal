@@ -7,6 +7,11 @@ import pythoncom
 import wmi
 
 from models.diagnostic_models import DiskPartition, SmartDriveStatus
+from services.app_logging import get_logger
+from services.diagnostic_runtime import friendly_exception_message
+
+
+LOGGER = get_logger(__name__)
 
 
 class DiskDiagnostic:
@@ -33,7 +38,8 @@ class DiskDiagnostic:
                 except PermissionError:
                     continue
         except Exception as e:
-            disks.append(DiskPartition(error_message=str(e)))
+            LOGGER.warning("Disk partition diagnostics failed: %s", e)
+            disks.append(DiskPartition(error_message=friendly_exception_message(e, "Disk diagnostics")))
         return disks
 
     def get_smart_drive_statuses(self) -> list[SmartDriveStatus]:
@@ -47,7 +53,8 @@ class DiskDiagnostic:
                 display = f"{drive.Caption} - {drive.Status}"
                 statuses.append(SmartDriveStatus(key=key, display_text=display))
         except Exception as e:
-            statuses.append(SmartDriveStatus(error_message=str(e)))
+            LOGGER.warning("SMART diagnostics failed: %s", e)
+            statuses.append(SmartDriveStatus(error_message=friendly_exception_message(e, "SMART diagnostics")))
         return statuses
 
     def get_disk_partitions_and_usage(self) -> list[dict[str, str]]:

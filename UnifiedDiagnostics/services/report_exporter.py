@@ -44,6 +44,16 @@ def write_csv_report(path: str, payload: dict[str, Any]) -> None:
                 "",
             ])
 
+        for issue in payload.get("diagnostic_report", []):
+            writer.writerow([
+                "Diagnostic Issue",
+                issue["source"],
+                issue["message"],
+                issue.get("category", ""),
+                issue.get("severity", ""),
+                "",
+            ])
+
 
 def write_json_report(path: str, payload: dict[str, Any]) -> None:
     """Write a diagnostics report payload as JSON."""
@@ -86,6 +96,23 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
             f"{scan_rows}</table>"
         )
 
+    diagnostic_rows = "\n".join(
+        "<tr>"
+        f"<td>{html.escape(issue['source'])}</td>"
+        f"<td>{html.escape(issue.get('category', ''))}</td>"
+        f"<td>{html.escape(issue['message'])}</td>"
+        f"<td>{html.escape(issue.get('severity', ''))}</td>"
+        "</tr>"
+        for issue in payload.get("diagnostic_report", [])
+    )
+    diagnostic_block = ""
+    if diagnostic_rows:
+        diagnostic_block = (
+            "<h2>Diagnostic Issues</h2>"
+            "<table><tr><th>Source</th><th>Category</th><th>Message</th><th>Severity</th></tr>"
+            f"{diagnostic_rows}</table>"
+        )
+
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -111,6 +138,7 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
     <tr><th>Severity</th><th>Title</th><th>Message</th><th>Recommended action</th><th>State</th><th>Persistence</th></tr>
     {health_rows}
   </table>
+  {diagnostic_block}
   {scan_block}
 </body>
 </html>

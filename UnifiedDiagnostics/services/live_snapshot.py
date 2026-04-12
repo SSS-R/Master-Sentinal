@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 from models.diagnostic_models import (
     BitLockerVolumeStatus,
     BackgroundServiceStatus,
+    DiagnosticIssue,
+    DiagnosticReport,
     DiskPartition,
     EventLogEntry,
     EventLogSummary,
@@ -33,6 +35,8 @@ from models.diagnostic_models import (
     WindowsUpdateHealth,
 )
 from models.health_models import HealthSummary
+from services.app_logging import get_logger
+from services.diagnostic_runtime import friendly_exception_message
 from services.health_analyzer import HealthAnalyzer
 
 if TYPE_CHECKING:
@@ -40,6 +44,9 @@ if TYPE_CHECKING:
     from modules.disk_diag import DiskDiagnostic
     from modules.gpu_diag import GPUDiagnostic
     from modules.ram_diag import RAMDiagnostic
+
+
+LOGGER = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,7 @@ class DiagnosticSnapshot:
     security_health: SecurityHealth
     startup_health: StartupHealth
     system_form_factor: SystemFormFactor
+    diagnostic_report: DiagnosticReport
     summary: SnapshotSummary
     health_summary: HealthSummary
 
@@ -114,7 +122,8 @@ class WindowsUpdateDiagnostic:
                 reboot_pending=payload.get("RebootPending"),
             )
         except Exception as e:
-            return WindowsUpdateHealth(error_message=str(e))
+            LOGGER.warning("Windows Update diagnostics failed: %s", e)
+            return WindowsUpdateHealth(error_message=friendly_exception_message(e, "Windows Update diagnostics"))
 
     @staticmethod
     def _creation_flags() -> int:
@@ -211,7 +220,11 @@ class EventLogDiagnostic:
                 recent_events=events,
             )
         except Exception as e:
-            return EventLogSummary(lookback_days=lookback_days, error_message=str(e))
+            LOGGER.warning("Event Viewer diagnostics failed: %s", e)
+            return EventLogSummary(
+                lookback_days=lookback_days,
+                error_message=friendly_exception_message(e, "Event Viewer diagnostics"),
+            )
 
     @staticmethod
     def _creation_flags() -> int:
@@ -297,7 +310,11 @@ class ReliabilityMonitorDiagnostic:
                 recent_records=records,
             )
         except Exception as e:
-            return ReliabilitySummary(lookback_days=lookback_days, error_message=str(e))
+            LOGGER.warning("Reliability diagnostics failed: %s", e)
+            return ReliabilitySummary(
+                lookback_days=lookback_days,
+                error_message=friendly_exception_message(e, "Reliability diagnostics"),
+            )
 
     @staticmethod
     def _creation_flags() -> int:
@@ -393,7 +410,8 @@ class NetworkDiagnostic:
                 internet_reachable=self._internet_reachable(),
             )
         except Exception as e:
-            return NetworkHealth(error_message=str(e))
+            LOGGER.warning("Network diagnostics failed: %s", e)
+            return NetworkHealth(error_message=friendly_exception_message(e, "Network diagnostics"))
 
     @staticmethod
     def _creation_flags() -> int:
@@ -485,7 +503,8 @@ class StorageHealthDiagnostic:
             ]
             return StorageHealth(drives=drives)
         except Exception as e:
-            return StorageHealth(error_message=str(e))
+            LOGGER.warning("Storage health diagnostics failed: %s", e)
+            return StorageHealth(error_message=friendly_exception_message(e, "Storage diagnostics"))
 
     @staticmethod
     def _creation_flags() -> int:
@@ -592,7 +611,8 @@ class SecurityDiagnostic:
                 bitlocker_error=self._text(payload.get("BitLockerError")),
             )
         except Exception as e:
-            return SecurityHealth(error_message=str(e))
+            LOGGER.warning("Security diagnostics failed: %s", e)
+            return SecurityHealth(error_message=friendly_exception_message(e, "Security diagnostics"))
 
     @staticmethod
     def _creation_flags() -> int:
@@ -759,7 +779,8 @@ class StartupServiceDiagnostic:
                 service_error=self._text(payload.get("ServiceError")),
             )
         except Exception as e:
-            return StartupHealth(error_message=str(e))
+            LOGGER.warning("Startup diagnostics failed: %s", e)
+            return StartupHealth(error_message=friendly_exception_message(e, "Startup diagnostics"))
 
     @staticmethod
     def _creation_flags() -> int:
@@ -893,7 +914,8 @@ class SystemFormFactorDiagnostic:
                 has_battery=has_battery,
             )
         except Exception as e:
-            return SystemFormFactor(error_message=str(e))
+            LOGGER.warning("System form-factor diagnostics failed: %s", e)
+            return SystemFormFactor(error_message=friendly_exception_message(e, "System form-factor diagnostics"))
 
     @staticmethod
     def _creation_flags() -> int:
@@ -1050,6 +1072,19 @@ class LiveSnapshotCollector:
             if self.system_form_factor_mod is not None
             else SystemFormFactor()
         )
+        diagnostic_report = self._build_diagnostic_report(
+            gpu_devices,
+            disk_partitions,
+            smart_drives,
+            windows_update_health,
+            event_log_summary,
+            reliability_summary,
+            network_health,
+            storage_health,
+            security_health,
+            startup_health,
+            system_form_factor,
+        )
         health_summary = self.health_analyzer.analyze(
             cpu_load,
             memory_stats,
@@ -1081,6 +1116,7 @@ class LiveSnapshotCollector:
             security_health=security_health,
             startup_health=startup_health,
             system_form_factor=system_form_factor,
+            diagnostic_report=diagnostic_report,
             summary=SnapshotSummary(
                 cpu_usage_text=f"{cpu_load}%",
                 ram_usage_text=f"{memory_stats.percent_used}%",
@@ -1094,6 +1130,64 @@ class LiveSnapshotCollector:
             ),
             health_summary=health_summary,
         )
+
+    @staticmethod
+    def _build_diagnostic_report(
+        gpu_devices: list[GPUDevice],
+        disk_partitions: list[DiskPartition],
+        smart_drives: list[SmartDriveStatus],
+        windows_update_health: WindowsUpdateHealth,
+        event_log_summary: EventLogSummary,
+        reliability_summary: ReliabilitySummary,
+        network_health: NetworkHealth,
+        storage_health: StorageHealth,
+        security_health: SecurityHealth,
+        startup_health: StartupHealth,
+        system_form_factor: SystemFormFactor,
+    ) -> DiagnosticReport:
+        issues: list[DiagnosticIssue] = []
+
+        for gpu in gpu_devices:
+            if gpu.is_error:
+                issues.append(DiagnosticIssue(source="GPU", category="collection", message=gpu.error_message or "Unknown error"))
+        for partition in disk_partitions:
+            if partition.is_error:
+                issues.append(DiagnosticIssue(source="Disk", category="collection", message=partition.error_message or "Unknown error"))
+        for smart_drive in smart_drives:
+            if smart_drive.is_error:
+                issues.append(DiagnosticIssue(source="SMART", category="collection", message=smart_drive.error_message or "Unknown error"))
+
+        for source, model in (
+            ("Windows Update", windows_update_health),
+            ("Event Viewer", event_log_summary),
+            ("Reliability Monitor", reliability_summary),
+            ("Network", network_health),
+            ("Storage", storage_health),
+            ("Security", security_health),
+            ("Startup", startup_health),
+            ("System Form Factor", system_form_factor),
+        ):
+            if getattr(model, "is_error", False):
+                issues.append(
+                    DiagnosticIssue(
+                        source=source,
+                        category="collection",
+                        message=getattr(model, "error_message", "") or "Unknown error",
+                    )
+                )
+
+        for source, message, severity in (
+            ("Security", security_health.defender_error, "warning"),
+            ("Security", security_health.firewall_error, "warning"),
+            ("Security", security_health.bitlocker_error, "info"),
+            ("Startup", startup_health.startup_error, "warning"),
+            ("Startup", startup_health.slow_startup_error, "info"),
+            ("Startup", startup_health.service_error, "warning"),
+        ):
+            if message:
+                issues.append(DiagnosticIssue(source=source, category="partial", message=message, severity=severity))
+
+        return DiagnosticReport(issues=issues)
 
     @staticmethod
     def _format_collection_status(

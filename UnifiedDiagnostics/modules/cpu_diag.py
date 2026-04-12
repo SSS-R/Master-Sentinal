@@ -7,6 +7,11 @@ import wmi
 import pythoncom
 
 from models.diagnostic_models import CPUInfo
+from services.app_logging import get_logger
+from services.diagnostic_runtime import friendly_exception_message
+
+
+LOGGER = get_logger(__name__)
 
 
 class CPUDiagnostic:
@@ -26,7 +31,8 @@ class CPUDiagnostic:
                 )
             return CPUInfo()
         except Exception as e:
-            return CPUInfo(error_message=str(e))
+            LOGGER.warning("CPU diagnostics failed: %s", e)
+            return CPUInfo(error_message=friendly_exception_message(e, "CPU diagnostics"))
 
     def get_cpu_info(self) -> dict[str, str | int]:
         """Return the legacy dict representation expected by older callers."""

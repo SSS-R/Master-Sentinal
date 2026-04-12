@@ -101,6 +101,7 @@ def test_collect_formats_dashboard_summary_for_healthy_devices():
     assert snapshot.summary.gpu_status_text == "1 GPU"
     assert snapshot.summary.disk_status_text == "1 Partition"
     assert snapshot.health_summary.overall_status == "ok"
+    assert snapshot.diagnostic_report.has_issues is False
     assert snapshot.memory_stats.percent_used == 50.0
     assert snapshot.gpu_devices[0].name == "RTX"
     assert snapshot.disk_partitions[0].mountpoint == "C:\\"
@@ -119,5 +120,7 @@ def test_collect_marks_device_summary_unavailable_on_errors():
     assert snapshot.summary.gpu_status_text == "Unavailable"
     assert snapshot.summary.disk_status_text == "Unavailable"
     assert snapshot.health_summary.overall_status == "warning"
+    assert snapshot.diagnostic_report.has_issues is True
+    assert snapshot.diagnostic_report.entries()[0].source == "GPU"
     assert snapshot.gpu_devices[0].is_error is True
     assert snapshot.disk_partitions[0].is_error is True
