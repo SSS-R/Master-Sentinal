@@ -10,7 +10,7 @@ This document tracks the major work still left for `Master Sentinal` before it i
 - [x] Make disk collection use `DiskPartition` and `SmartDriveStatus` as the primary implementation instead of converting from dicts.
 - [x] Reduce legacy `get_*_info()` dict methods to thin compatibility wrappers only.
 - [x] Add typed models for CPU info, board info, and full scan results.
-- [ ] Remove remaining string-key assumptions from the UI and services. Live snapshot, dashboard, static CPU/board, and CSV export paths are typed; legacy callers still need review.
+- [x] Remove remaining string-key assumptions from the UI and services. Live snapshot, dashboard, static CPU/board, and CSV export paths are typed; legacy callers still need review.
 
 ### 2. Improve diagnostics depth
 
