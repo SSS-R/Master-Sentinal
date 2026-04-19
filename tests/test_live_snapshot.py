@@ -20,14 +20,6 @@ class StubCPU:
 
 
 class StubRAM:
-    def get_ram_info(self):
-        return {
-            "Total": "16.00 GB",
-            "Available": "8.00 GB",
-            "Used": "8.00 GB",
-            "Percentage": 50.0,
-        }
-
     def get_ram_stats(self):
         return MemoryStats("16.00 GB", "8.00 GB", "8.00 GB", 50.0)
 
@@ -35,9 +27,6 @@ class StubRAM:
 class StubGPU:
     def __init__(self, payload):
         self.payload = payload
-
-    def get_gpu_info(self):
-        return self.payload
 
     def get_gpu_devices(self):
         return [
@@ -59,12 +48,6 @@ class StubDisk:
     def __init__(self, partitions, smart):
         self.partitions = partitions
         self.smart = smart
-
-    def get_disk_partitions_and_usage(self):
-        return self.partitions
-
-    def get_smart_status(self):
-        return self.smart
 
     def get_disk_partitions(self):
         return [

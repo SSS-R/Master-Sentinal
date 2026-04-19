@@ -20,25 +20,21 @@ class CPUInfo:
         """Return True when CPU info collection failed."""
         return self.error_message is not None
 
-    def as_dict(self) -> dict[str, str | int]:
-        """Return the legacy dict representation expected by older callers."""
+    def as_rows(self) -> dict[str, str]:
+        """Return display-ready rows for the UI."""
         if self.error_message:
             return {"Error": self.error_message}
 
-        info: dict[str, str | int] = {}
+        info: dict[str, str] = {}
         if self.name:
             info["Name"] = self.name
         if self.cores is not None:
-            info["Cores"] = self.cores
+            info["Cores"] = str(self.cores)
         if self.threads is not None:
-            info["Threads"] = self.threads
+            info["Threads"] = str(self.threads)
         if self.max_clock_speed_text:
             info["MaxClockSpeed"] = self.max_clock_speed_text
         return info
-
-    def as_rows(self) -> dict[str, str]:
-        """Return display-ready rows for the UI."""
-        return {key: str(value) for key, value in self.as_dict().items()}
 
 
 @dataclass(frozen=True)
@@ -61,8 +57,8 @@ class BoardInfo:
         """Return True when board or BIOS collection hit an error."""
         return self.error_message is not None
 
-    def as_dict(self) -> dict[str, str]:
-        """Return the legacy dict representation expected by older callers."""
+    def as_rows(self) -> dict[str, str]:
+        """Return display-ready rows for the UI."""
         info = {
             "System": self.system,
             "Node Name": self.node_name,
@@ -81,10 +77,6 @@ class BoardInfo:
         if self.error_message:
             info["Error"] = self.error_message
         return info
-
-    def as_rows(self) -> dict[str, str]:
-        """Return display-ready rows for the UI."""
-        return self.as_dict()
 
 
 @dataclass(frozen=True)
@@ -538,14 +530,7 @@ class MemoryStats:
     used_gb_text: str
     percent_used: float
 
-    def as_dict(self) -> dict[str, str | float]:
-        """Return the legacy dict representation expected by older callers."""
-        return {
-            "Total": self.total_gb_text,
-            "Available": self.available_gb_text,
-            "Used": self.used_gb_text,
-            "Percentage": self.percent_used,
-        }
+
 
     def as_rows(self) -> dict[str, str]:
         """Return display-ready rows for the UI."""
@@ -575,8 +560,8 @@ class GPUDevice:
         """Return True when the GPU entry represents a collection error."""
         return self.error_message is not None
 
-    def as_dict(self) -> dict[str, str]:
-        """Return the legacy dict representation expected by older callers."""
+    def as_rows(self) -> dict[str, str]:
+        """Return display-ready rows for the UI."""
         if self.error_message:
             return {"Error": self.error_message}
         return {
@@ -619,8 +604,8 @@ class DiskPartition:
         """Return True when the partition entry represents a collection error."""
         return self.error_message is not None
 
-    def as_dict(self) -> dict[str, str]:
-        """Return the legacy dict representation expected by older callers."""
+    def as_rows(self) -> dict[str, str]:
+        """Return display-ready rows for the UI."""
         if self.error_message:
             return {"Error": self.error_message}
         return {

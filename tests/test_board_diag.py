@@ -14,7 +14,12 @@ from modules.board_diag import BoardDiagnostic
 class TestBoardDiagnostic:
     """Tests for BoardDiagnostic methods."""
 
-    def test_get_board_details_returns_typed_model(self, mock_wmi):
+    @patch("wmi.WMI")
+    @patch("pythoncom.CoInitialize")
+    def test_get_board_details_returns_typed_model(self, mock_coinit, mock_wmi):
+        from conftest import FakeBoard
+        mock_wmi.return_value.Win32_BaseBoard.return_value = [FakeBoard()]
+        mock_wmi.return_value.Win32_BIOS.return_value = [FakeBoard()]
         diag = BoardDiagnostic()
         info = diag.get_board_details()
 
@@ -22,14 +27,6 @@ class TestBoardDiagnostic:
         assert info.product == "ROG STRIX Z690"
         assert info.serial_number == "ABC123"
         assert info.bios_version == "1.0.0"
-
-    def test_get_board_info_returns_legacy_dict(self, mock_wmi):
-        diag = BoardDiagnostic()
-        info = diag.get_board_info()
-
-        assert info["Manufacturer"] == "ASUS"
-        assert info["Product"] == "ROG STRIX Z690"
-        assert info["BIOS Version"] == "1.0.0"
 
     def test_get_board_details_preserves_platform_info_on_wmi_error(self):
         with (
