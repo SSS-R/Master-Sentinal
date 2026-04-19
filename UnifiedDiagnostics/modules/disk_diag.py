@@ -57,10 +57,3 @@ class DiskDiagnostic:
             statuses.append(SmartDriveStatus(error_message=friendly_exception_message(e, "SMART diagnostics")))
         return statuses
 
-    def get_disk_partitions_and_usage(self) -> list[dict[str, str]]:
-        """Return the legacy dict representation expected by older callers."""
-        return [disk.as_dict() for disk in self.get_disk_partitions()]
-
-    def get_smart_status(self) -> dict[str, str]:
-        """Return the legacy dict representation expected by older callers."""
-        return dict(smart_drive.as_pair() for smart_drive in self.get_smart_drive_statuses())

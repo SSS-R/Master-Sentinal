@@ -28,3 +28,4 @@ battery-report.html
 # Tests
 tests/__pycache__/
 .pytest_cache/
+test_venv/

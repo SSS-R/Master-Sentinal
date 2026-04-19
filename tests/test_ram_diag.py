@@ -16,7 +16,10 @@ from modules.ram_diag import RAMDiagnostic
 class TestRAMDiagnostic:
     """Tests for RAMDiagnostic methods."""
 
-    def test_get_ram_stats_returns_typed_model(self, mock_psutil):
+    @patch("psutil.virtual_memory")
+    def test_get_ram_stats_returns_typed_model(self, mock_vm):
+        from conftest import FakeMemory
+        mock_vm.return_value = FakeMemory()
         diag = RAMDiagnostic()
         stats = diag.get_ram_stats()
         assert stats.total_gb_text == "16.00 GB"
@@ -24,23 +27,3 @@ class TestRAMDiagnostic:
         assert stats.used_gb_text == "8.00 GB"
         assert stats.percent_used == 50.0
 
-    def test_get_ram_info_returns_expected_keys(self, mock_psutil):
-        diag = RAMDiagnostic()
-        info = diag.get_ram_info()
-        assert 'Total' in info
-        assert 'Available' in info
-        assert 'Used' in info
-        assert 'Percentage' in info
-
-    def test_get_ram_info_values_are_formatted(self, mock_psutil):
-        diag = RAMDiagnostic()
-        info = diag.get_ram_info()
-        assert 'GB' in info['Total']
-        assert info['Percentage'] == 50.0
-
-    def test_get_ram_info_total_calculation(self, mock_psutil):
-        diag = RAMDiagnostic()
-        info = diag.get_ram_info()
-        assert info['Total'] == "16.00 GB"
-        assert info['Available'] == "8.00 GB"
-        assert info['Used'] == "8.00 GB"

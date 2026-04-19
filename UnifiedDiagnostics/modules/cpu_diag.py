@@ -34,10 +34,6 @@ class CPUDiagnostic:
             LOGGER.warning("CPU diagnostics failed: %s", e)
             return CPUInfo(error_message=friendly_exception_message(e, "CPU diagnostics"))
 
-    def get_cpu_info(self) -> dict[str, str | int]:
-        """Return the legacy dict representation expected by older callers."""
-        return self.get_cpu_details().as_dict()
-
     def get_cpu_usage(self) -> float:
         """Return overall CPU usage percentage (non-blocking)."""
         return psutil.cpu_percent(interval=None)

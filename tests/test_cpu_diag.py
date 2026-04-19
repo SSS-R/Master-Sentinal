@@ -17,7 +17,11 @@ from modules.cpu_diag import CPUDiagnostic
 class TestCPUDiagnostic:
     """Tests for CPUDiagnostic methods."""
 
-    def test_get_cpu_details_returns_typed_model(self, mock_wmi):
+    @patch("wmi.WMI")
+    @patch("pythoncom.CoInitialize")
+    def test_get_cpu_details_returns_typed_model(self, mock_coinit, mock_wmi):
+        from conftest import FakeCPU
+        mock_wmi.return_value.Win32_Processor.return_value = [FakeCPU()]
         diag = CPUDiagnostic()
         info = diag.get_cpu_details()
         assert info.name == "Intel Core i7-12700K"
@@ -25,15 +29,8 @@ class TestCPUDiagnostic:
         assert info.threads == 20
         assert info.max_clock_speed_text == "3600 MHz"
 
-    def test_get_cpu_info_returns_expected_keys(self, mock_wmi):
-        diag = CPUDiagnostic()
-        info = diag.get_cpu_info()
-        assert 'Name' in info
-        assert 'Cores' in info
-        assert info['Cores'] == 12
-        assert info['Threads'] == 20
-
-    def test_get_cpu_usage_returns_float(self, mock_psutil):
+    @patch("psutil.cpu_percent", return_value=42.0)
+    def test_get_cpu_usage_returns_float(self, mock_cpu_percent):
         diag = CPUDiagnostic()
         usage = diag.get_cpu_usage()
         assert isinstance(usage, float)
@@ -46,7 +43,9 @@ class TestCPUDiagnostic:
             assert isinstance(cores, list)
             assert len(cores) == 3
 
-    def test_get_frequency_returns_str(self, mock_psutil):
+    @patch("psutil.cpu_freq")
+    def test_get_frequency_returns_str(self, mock_cpu_freq):
+        mock_cpu_freq.return_value.current = 3600.0
         diag = CPUDiagnostic()
         freq = diag.get_frequency()
         assert "MHz" in freq
@@ -56,9 +55,3 @@ class TestCPUDiagnostic:
             diag = CPUDiagnostic()
             assert diag.get_frequency() == "N/A"
 
-    def test_get_cpu_info_error_handling(self):
-        with patch("wmi.WMI", side_effect=Exception("WMI unavailable")), \
-             patch("pythoncom.CoInitialize"):
-            diag = CPUDiagnostic()
-            info = diag.get_cpu_info()
-            assert 'Error' in info
