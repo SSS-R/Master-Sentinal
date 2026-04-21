@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import platform
@@ -11,8 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from modules.cpu_diag import CPUDiagnostic
+from modules.disk_diag import DiskDiagnostic
+from modules.ram_diag import RAMDiagnostic
 from services.app_logging import get_logger
-
 
 LOGGER = get_logger(__name__)
 
@@ -55,49 +58,29 @@ class IssueBundleExporter:
     def _get_cpu_info(self) -> dict[str, Any]:
         """Get CPU information."""
         try:
-            import psutil
-            return {
-                "name": platform.processor(),
-                "cores": psutil.cpu_count(logical=False),
-                "threads": psutil.cpu_count(logical=True),
-            }
-        except Exception:
-            return {"error": "Unable to collect CPU info"}
+            diag = CPUDiagnostic()
+            cpu = diag.get_cpu_details()
+            return dataclasses.asdict(cpu)
+        except Exception as e:
+            return {"error": f"Unable to collect CPU info: {e}"}
 
     def _get_memory_info(self) -> dict[str, Any]:
         """Get memory information."""
         try:
-            import psutil
-            mem = psutil.virtual_memory()
-            return {
-                "total_gb": round(mem.total / (1024 ** 3), 2),
-                "available_gb": round(mem.available / (1024 ** 3), 2),
-                "percent_used": mem.percent,
-            }
-        except Exception:
-            return {"error": "Unable to collect memory info"}
+            diag = RAMDiagnostic()
+            mem = diag.get_ram_stats()
+            return dataclasses.asdict(mem)
+        except Exception as e:
+            return {"error": f"Unable to collect memory info: {e}"}
 
     def _get_disk_info(self) -> list[dict[str, Any]]:
         """Get disk information."""
-        disks = []
         try:
-            import psutil
-            for partition in psutil.disk_partitions(all=True):
-                try:
-                    usage = psutil.disk_usage(partition.mountpoint)
-                    disks.append({
-                        "device": partition.device,
-                        "mountpoint": partition.mountpoint,
-                        "fstype": partition.fstype,
-                        "total_gb": round(usage.total / (1024 ** 3), 2),
-                        "used_gb": round(usage.used / (1024 ** 3), 2),
-                        "percent_used": usage.percent,
-                    })
-                except (PermissionError, OSError):
-                    continue
-        except Exception:
-            pass
-        return disks
+            diag = DiskDiagnostic()
+            disks = diag.get_disk_partitions()
+            return [dataclasses.asdict(d) for d in disks]
+        except Exception as e:
+            return [{"error": f"Unable to collect disk info: {e}"}]
 
     def _get_installed_apps(self) -> list[str]:
         """Get list of installed applications."""
@@ -267,7 +250,7 @@ SYSTEM OVERVIEW
 ---------------
 OS: {system_info.get('os', {}).get('platform', 'Unknown')}
 CPU: {system_info.get('hardware', {}).get('cpu', {}).get('name', 'Unknown')}
-Memory: {system_info.get('hardware', {}).get('memory', {}).get('total_gb', 'Unknown')} GB
+Memory: {system_info.get('hardware', {}).get('memory', {}).get('total_gb_text', 'Unknown')}
 
 CONTENTS
 --------
