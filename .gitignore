@@ -29,3 +29,4 @@ CLAUDE.md
 # Tests
 tests/__pycache__/
 .pytest_cache/
+test_venv/

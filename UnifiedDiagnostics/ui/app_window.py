@@ -1560,7 +1560,7 @@ class App(ctk.CTk):
         rows: dict[str, str] = {}
         for index, item in enumerate(items, start=1):
             label = getattr(item, label_attr, "") or getattr(item, "device", "") or f"Device {index}"
-            for key, value in item.as_dict().items():
+            for key, value in item.as_rows().items():
                 rows[f"{label} - {key}"] = str(value)
         return rows
 

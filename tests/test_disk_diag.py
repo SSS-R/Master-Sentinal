@@ -16,56 +16,32 @@ from modules.disk_diag import DiskDiagnostic
 class TestDiskDiagnostic:
     """Tests for DiskDiagnostic methods."""
 
-    def test_get_disk_partitions_returns_typed_models(self, mock_psutil):
+    @patch("psutil.disk_partitions")
+    @patch("psutil.disk_usage")
+    def test_get_disk_partitions_returns_typed_models(self, mock_disk_usage, mock_disk_partitions):
+        from conftest import FakePartition, FakeUsage
+        mock_disk_partitions.return_value = [FakePartition()]
+        mock_disk_usage.return_value = FakeUsage()
         diag = DiskDiagnostic()
         disks = diag.get_disk_partitions()
         assert len(disks) == 1
         assert disks[0].device == "C:\\"
         assert disks[0].mountpoint == "C:\\"
 
-    def test_get_smart_drive_statuses_returns_typed_models(self, mock_wmi):
+    @patch("wmi.WMI")
+    @patch("pythoncom.CoInitialize")
+    def test_get_smart_drive_statuses_returns_typed_models(self, mock_coinit, mock_wmi):
+        from conftest import FakeDrive
+        mock_wmi.return_value.Win32_DiskDrive.return_value = [FakeDrive()]
         diag = DiskDiagnostic()
         smart = diag.get_smart_drive_statuses()
         assert len(smart) >= 1
         assert smart[0].key == "\\\\.\\PHYSICALDRIVE0"
-
-    def test_get_disk_partitions_returns_list(self, mock_psutil):
-        diag = DiskDiagnostic()
-        disks = diag.get_disk_partitions_and_usage()
-        assert isinstance(disks, list)
-        assert len(disks) == 1
-
-    def test_partition_data_has_expected_keys(self, mock_psutil):
-        diag = DiskDiagnostic()
-        disks = diag.get_disk_partitions_and_usage()
-        d = disks[0]
-        assert 'Device' in d
-        assert 'Mountpoint' in d
-        assert 'Total' in d
-        assert 'Percent' in d
-
-    def test_partition_total_formatted(self, mock_psutil):
-        diag = DiskDiagnostic()
-        disks = diag.get_disk_partitions_and_usage()
-        assert "GB" in disks[0]['Total']
-
-    def test_get_smart_status_returns_dict(self, mock_wmi):
-        diag = DiskDiagnostic()
-        smart = diag.get_smart_status()
-        assert isinstance(smart, dict)
-        assert len(smart) >= 1
-
-    def test_get_smart_status_error_handling(self):
-        with patch("wmi.WMI", side_effect=Exception("WMI fail")), \
-             patch("pythoncom.CoInitialize"):
-            diag = DiskDiagnostic()
-            smart = diag.get_smart_status()
-            assert 'Error' in smart
 
     def test_partition_handles_permission_error(self):
         from conftest import FakePartition
         with patch("psutil.disk_partitions", return_value=[FakePartition()]), \
              patch("psutil.disk_usage", side_effect=PermissionError("no access")):
             diag = DiskDiagnostic()
-            disks = diag.get_disk_partitions_and_usage()
+            disks = diag.get_disk_partitions()
             assert disks == []

@@ -73,6 +73,3 @@ class BoardDiagnostic:
             )
         return info
 
-    def get_board_info(self) -> dict[str, str]:
-        """Return the legacy dict representation expected by older callers."""
-        return self.get_board_details().as_dict()

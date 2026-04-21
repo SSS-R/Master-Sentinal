@@ -25,6 +25,3 @@ class RAMDiagnostic:
             percent_used=mem.percent,
         )
 
-    def get_ram_info(self) -> dict[str, str | float]:
-        """Return a legacy dictionary of RAM statistics."""
-        return self.get_ram_stats().as_dict()

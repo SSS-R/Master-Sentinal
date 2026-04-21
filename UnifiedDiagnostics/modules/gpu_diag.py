@@ -86,6 +86,3 @@ class GPUDiagnostic:
 
         return gpus
 
-    def get_gpu_info(self) -> list[dict[str, str]]:
-        """Return the legacy dict representation expected by older callers."""
-        return [gpu.as_dict() for gpu in self.get_gpu_devices()]
