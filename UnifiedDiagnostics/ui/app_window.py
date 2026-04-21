@@ -29,15 +29,25 @@ from modules.disk_diag import DiskDiagnostic
 from modules.full_scan import FullScanDiagnostic
 from modules.gpu_diag import GPUDiagnostic
 from modules.ram_diag import RAMDiagnostic
+from modules.security_diag import SecurityDiagnostic
+from modules.network_diag import NetworkDiagnostic
+from modules.startup_diag import StartupDiagnostic
+from modules.update_diag import WindowsUpdateDiagnostic
+from modules.driver_diag import DriverDiagnostic
+from modules.event_log_diag import EventLogDiagnostic
 from services.full_scan_service import FullScanService, ScanTask
 from services.app_logging import get_logger
 from services.live_snapshot import DiagnosticSnapshot, LiveSnapshotCollector
 from services.report_exporter import write_csv_report, write_html_report, write_json_report
+from services.snapshot_history import SnapshotHistory
+from services.monitoring_alerts import MonitoringAlerts, AlertConfig, AlertSeverity
+from services.scan_presets import ScanPresetService, ScanPreset
+from services.issue_bundle import IssueBundleExporter
 from ui.components import InfoRow, MetricCard, SectionFrame
 
 
 # Navigation items (order matters — rendered top to bottom)
-NAV_ITEMS: list[str] = ["Dashboard", "CPU", "Memory", "GPU", "Storage", "System"]
+NAV_ITEMS: list[str] = ["Dashboard", "CPU", "Memory", "GPU", "Storage", "Security", "Network", "Startup", "Update", "Trends", "System"]
 NAV_SCAN_ITEM: str = "Full Scan"
 
 LOGGER = get_logger(__name__)
@@ -103,12 +113,23 @@ class App(ctk.CTk):
         self.disk_mod = DiskDiagnostic()
         self.board_mod = BoardDiagnostic()
         self.full_scan_mod = FullScanDiagnostic()
+        self.security_mod = SecurityDiagnostic()
+        self.network_mod = NetworkDiagnostic()
+        self.startup_mod = StartupDiagnostic()
+        self.update_mod = WindowsUpdateDiagnostic()
+        self.driver_mod = DriverDiagnostic()
+        self.event_log_mod = EventLogDiagnostic()
         self.snapshot_collector = LiveSnapshotCollector(
             cpu_mod=self.cpu_mod,
             ram_mod=self.ram_mod,
             gpu_mod=self.gpu_mod,
             disk_mod=self.disk_mod,
         )
+        # New services for v1.0
+        self.snapshot_history = SnapshotHistory()
+        self.monitoring_alerts = MonitoringAlerts()
+        self.scan_preset_service = ScanPresetService(self.full_scan_mod)
+        self.issue_bundle_exporter = IssueBundleExporter()
         self.scan_service = FullScanService(self.full_scan_mod)
         self.scan_logs: list[dict[str, str]] = []
         self.last_scan_started_at: datetime | None = None
@@ -131,6 +152,11 @@ class App(ctk.CTk):
         self.setup_memory_ui()
         self.setup_gpu_ui()
         self.setup_storage_ui()
+        self.setup_security_ui()
+        self.setup_network_ui()
+        self.setup_startup_ui()
+        self.setup_update_ui()
+        self.setup_trends_ui()
         self.setup_system_ui()
         self.setup_full_scan_ui()
 
@@ -139,6 +165,16 @@ class App(ctk.CTk):
         # Monitoring thread (uses Event for clean shutdown)
         self._stop_event = threading.Event()
         self.monitor_thread = self._start_background_thread(self._monitor_loop)
+
+        # Start monitoring alerts
+        self.monitoring_alerts.add_alert_callback(self._on_monitoring_alert)
+        self.monitoring_alerts.start_monitoring()
+
+        # Toast container (overlay for notifications)
+        self.toast_container = ctk.CTkFrame(self, corner_radius=10, fg_color=("gray90", "gray10"))
+        self.toast_container.grid(row=0, column=0, columnspan=2, sticky="ne", padx=20, pady=20)
+        self.toast_container.grid_forget()  # Hidden by default
+        self.toast_labels: list[ctk.CTkLabel] = []
 
     # ------------------------------------------------------------------
     # Navigation helpers
@@ -217,6 +253,13 @@ class App(ctk.CTk):
         export_btn.configure(text="Export Report (CSV, HTML, or JSON)")
         export_btn.pack(fill="x", padx=20, pady=(0, 10))
 
+        # Export Issue Bundle button
+        bundle_btn = ctk.CTkButton(
+            df, text="📦 Export Diagnostic Bundle", font=("Roboto", 14), height=36,
+            command=self._export_issue_bundle,
+        )
+        bundle_btn.pack(fill="x", padx=20, pady=(0, 10))
+
         self.health_frame = SectionFrame(df, "Health Overview")
         self.health_frame.pack(fill="x", padx=20, pady=(0, 10))
 
@@ -277,6 +320,174 @@ class App(ctk.CTk):
         self.smart_frame.pack(fill="x", padx=20, pady=10)
         self._set_empty_state(self.smart_frame.content, "Waiting for the first SMART snapshot...")
 
+    def setup_security_ui(self) -> None:
+        """Build the Security diagnostics section."""
+        sf = self.frames["Security"]
+
+        title = ctk.CTkLabel(
+            sf, text="Security & Privacy Status",
+            font=("Roboto", 24, "bold"),
+        )
+        title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        hint = ctk.CTkLabel(
+            sf,
+            text="Monitor Defender, Firewall, and BitLocker encryption status.",
+            text_color="gray70",
+            anchor="w",
+        )
+        hint.pack(anchor="w", padx=20, pady=(0, 20))
+
+        self.security_container = ctk.CTkFrame(sf, fg_color="transparent")
+        self.security_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.security_container, "Click 'Refresh' to load security status...")
+
+        refresh_btn = ctk.CTkButton(
+            sf, text="Refresh Status", height=36,
+            command=self._refresh_security_ui,
+        )
+        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.security_widgets: dict[str, InfoRow] = {}
+
+    def setup_network_ui(self) -> None:
+        """Build the Network diagnostics section."""
+        sf = self.frames["Network"]
+
+        title = ctk.CTkLabel(
+            sf, text="Network Connectivity",
+            font=("Roboto", 24, "bold"),
+        )
+        title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        hint = ctk.CTkLabel(
+            sf,
+            text="Check adapter status, DNS configuration, and gateway connectivity.",
+            text_color="gray70",
+            anchor="w",
+        )
+        hint.pack(anchor="w", padx=20, pady=(0, 20))
+
+        self.network_container = ctk.CTkFrame(sf, fg_color="transparent")
+        self.network_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.network_container, "Click 'Refresh' to load network status...")
+
+        refresh_btn = ctk.CTkButton(
+            sf, text="Refresh Status", height=36,
+            command=self._refresh_network_ui,
+        )
+        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.network_widgets: dict[str, dict[str, InfoRow]] = {}
+
+    def setup_startup_ui(self) -> None:
+        """Build the Startup diagnostics section."""
+        sf = self.frames["Startup"]
+
+        title = ctk.CTkLabel(
+            sf, text="Startup Programs & Services",
+            font=("Roboto", 24, "bold"),
+        )
+        title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        hint = ctk.CTkLabel(
+            sf,
+            text="Review startup items and detect services with slow startup times.",
+            text_color="gray70",
+            anchor="w",
+        )
+        hint.pack(anchor="w", padx=20, pady=(0, 20))
+
+        self.startup_container = ctk.CTkFrame(sf, fg_color="transparent")
+        self.startup_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.startup_container, "Click 'Refresh' to load startup items...")
+
+        refresh_btn = ctk.CTkButton(
+            sf, text="Refresh Status", height=36,
+            command=self._refresh_startup_ui,
+        )
+        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.startup_widgets: dict[str, InfoRow] = {}
+
+    def setup_update_ui(self) -> None:
+        """Build the Windows Update diagnostics section."""
+        sf = self.frames["Update"]
+
+        title = ctk.CTkLabel(
+            sf, text="Windows Update Health",
+            font=("Roboto", 24, "bold"),
+        )
+        title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        hint = ctk.CTkLabel(
+            sf,
+            text="Check Windows Update service status and detect pending reboots.",
+            text_color="gray70",
+            anchor="w",
+        )
+        hint.pack(anchor="w", padx=20, pady=(0, 20))
+
+        self.update_container = ctk.CTkFrame(sf, fg_color="transparent")
+        self.update_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.update_container, "Click 'Refresh' to load update status...")
+
+        refresh_btn = ctk.CTkButton(
+            sf, text="Refresh Status", height=36,
+            command=self._refresh_update_ui,
+        )
+        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.update_widgets: dict[str, InfoRow] = {}
+
+    def setup_trends_ui(self) -> None:
+        """Build the historical trends section."""
+        tf = self.frames["Trends"]
+
+        title = ctk.CTkLabel(
+            tf, text="System Health Trends",
+            font=("Roboto", 24, "bold"),
+        )
+        title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        hint = ctk.CTkLabel(
+            tf,
+            text="Track how your system health changes over time. Snapshots are saved automatically.",
+            text_color="gray70",
+            anchor="w",
+        )
+        hint.pack(anchor="w", padx=20, pady=(0, 20))
+
+        # Trend metric selector
+        selector_frame = ctk.CTkFrame(tf)
+        selector_frame.pack(fill="x", padx=20, pady=10)
+
+        selector_label = ctk.CTkLabel(
+            selector_frame, text="View trend for:",
+            font=("Roboto", 14),
+        )
+        selector_label.pack(side="left", padx=10, pady=10)
+
+        self.trend_metric_var = ctk.StringVar(value="health_score")
+        metric_selector = ctk.CTkOptionMenu(
+            selector_frame, variable=self.trend_metric_var,
+            values=["health_score", "cpu_usage", "ram_usage_percent", "disk_free_percent"],
+            command=self._on_trend_metric_changed,
+        )
+        metric_selector.pack(side="left", padx=10, pady=10)
+
+        refresh_btn = ctk.CTkButton(
+            selector_frame, text="Refresh Trends", height=36,
+            command=self._refresh_trends_ui,
+        )
+        refresh_btn.pack(side="right", padx=10, pady=10)
+
+        self.trend_container = ctk.CTkFrame(tf, fg_color="transparent")
+        self.trend_container.pack(fill="both", expand=True, padx=20, pady=10)
+        self._set_empty_state(self.trend_container, "Click 'Refresh Trends' to load history...")
+
+        self.trend_widgets: dict[str, InfoRow] = {}
+
     def setup_system_ui(self) -> None:
         """Build the static Motherboard & BIOS info section."""
         sf = self.frames["System"]
@@ -300,6 +511,34 @@ class App(ctk.CTk):
             font=("Roboto", 24, "bold"),
         )
         title.pack(anchor="w", pady=(0, 20))
+
+        # Scan preset selector
+        preset_frame = ctk.CTkFrame(self.fs_container)
+        preset_frame.pack(fill="x", pady=(0, 20))
+
+        preset_label = ctk.CTkLabel(
+            preset_frame, text="Scan Mode:",
+            font=("Roboto", 14),
+        )
+        preset_label.pack(side="left", padx=10, pady=10)
+
+        self.scan_preset_var = ctk.StringVar(value="Standard Scan")
+        preset_selector = ctk.CTkOptionMenu(
+            preset_frame, variable=self.scan_preset_var,
+            values=["Quick Scan", "Standard Scan", "Deep Scan"],
+            command=self._on_scan_preset_changed,
+        )
+        preset_selector.pack(side="left", padx=10, pady=10)
+
+        # Preset description label
+        self.preset_description_label = ctk.CTkLabel(
+            self.fs_container,
+            text="Full routine health check (10 min) - Includes SFC, DISM, Disk Check, Power & Battery diagnostics",
+            text_color="gray70",
+            anchor="w",
+            justify="left",
+        )
+        self.preset_description_label.pack(fill="x", padx=20, pady=(0, 20))
 
         self.start_scan_btn = ctk.CTkButton(
             self.fs_container, text="Start Health Scan",
@@ -441,12 +680,22 @@ class App(ctk.CTk):
             )
             return
 
+        # Get selected preset
+        preset_name = self.scan_preset_var.get()
+        preset_map = {
+            "Quick Scan": ScanPreset.QUICK,
+            "Standard Scan": ScanPreset.STANDARD,
+            "Deep Scan": ScanPreset.DEEP,
+        }
+        preset = preset_map.get(preset_name, ScanPreset.STANDARD)
+        tasks = self.scan_preset_service.get_tasks_for_preset(preset)
+
         self.start_scan_btn.configure(state="disabled", text="Scanning...")
         self.scan_logs = []
         self.last_scan_started_at = datetime.now(timezone.utc)
         self.last_scan_finished_at = None
         self._active_scan_started_at = perf_counter()
-        self.scan_progress_var.set(f"Running 0 of {len(self.check_list)} routine checks")
+        self.scan_progress_var.set(f"Running 0 of {len(tasks)} checks ({preset_name})")
         self.scan_duration_var.set("Elapsed 0.0s")
 
         for lbl in self.scan_rows.values():
@@ -454,7 +703,7 @@ class App(ctk.CTk):
 
         self._start_background_thread(
             self._run_task_batch,
-            self.check_list,
+            tasks,
             self.scan_rows,
             self.start_scan_btn,
             "Start Health Scan",
@@ -592,10 +841,17 @@ class App(ctk.CTk):
 
     def _monitor_loop(self) -> None:
         """Periodically poll diagnostics and schedule UI updates."""
+        snapshot_count = 0
         while not self._stop_event.is_set():
             try:
                 snapshot = self.snapshot_collector.collect()
                 self._safe_after(lambda current=snapshot: self._apply_snapshot(current))
+
+                # Save snapshot to history every 5 snapshots (every ~5 minutes)
+                snapshot_count += 1
+                if snapshot_count >= 5:
+                    snapshot_count = 0
+                    self._save_snapshot_to_history(snapshot)
 
             except Exception as e:
                 LOGGER.exception("Live monitor loop failed: %s", e)
@@ -605,6 +861,34 @@ class App(ctk.CTk):
 
             # Use Event.wait instead of time.sleep for clean cancellation
             self._stop_event.wait(UPDATE_INTERVAL_SEC)
+
+    def _save_snapshot_to_history(self, snapshot) -> None:
+        """Save a snapshot to history for trend tracking."""
+        try:
+            health = snapshot.health_summary
+            disk_free = None
+            if snapshot.disk_partitions:
+                # Get system drive free space
+                for disk in snapshot.disk_partitions:
+                    if disk.mountpoint == "C:\\":
+                        disk_free = 100 - ((disk.used / disk.total) * 100) if disk.total > 0 else None
+                        break
+
+            snapshot_data = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "health_score": getattr(health, "health_score", None),
+                "cpu_usage": float(snapshot.summary.cpu_usage_text.replace("%", "")) if snapshot.summary.cpu_usage_text else 0,
+                "ram_usage_percent": float(snapshot.summary.ram_usage_text.replace("%", "")) if snapshot.summary.ram_usage_text else 0,
+                "gpu_count": len(snapshot.gpu_devices) if snapshot.gpu_devices else 0,
+                "disk_count": len(snapshot.disk_partitions) if snapshot.disk_partitions else 0,
+                "critical_count": len([f for f in getattr(health, "findings", []) if f.severity == "critical"]) if health else 0,
+                "warning_count": len([f for f in getattr(health, "findings", []) if f.severity == "warning"]) if health else 0,
+                "temp_max_c": max([gpu.temperature_c for gpu in snapshot.gpu_devices if gpu.temperature_c is not None], default=None) if snapshot.gpu_devices else None,
+                "disk_free_percent": disk_free,
+            }
+            self.snapshot_history.save_snapshot(snapshot_data)
+        except Exception as e:
+            LOGGER.debug("Failed to save snapshot to history: %s", e)
 
     # ------------------------------------------------------------------
     # UI update (runs on main thread)
@@ -844,6 +1128,331 @@ class App(ctk.CTk):
     # Temperature alert helper
     # ------------------------------------------------------------------
 
+    def _refresh_security_ui(self) -> None:
+        """Refresh Security tab diagnostics."""
+        def _collect():
+            try:
+                health = self.security_mod.get_security_health()
+                self._safe_after(lambda: self._apply_security_ui(health))
+            except Exception as e:
+                LOGGER.exception("Security refresh failed: %s", e)
+                self._safe_after(lambda: self._set_empty_state(self.security_container, f"Error: {e}"))
+
+        self._start_background_thread(_collect)
+
+    def _apply_security_ui(self, health) -> None:
+        """Apply security diagnostics to UI."""
+        for child in self.security_container.winfo_children():
+            child.destroy()
+        self.security_widgets.clear()
+
+        # Defender status section
+        defender_frame = SectionFrame(self.security_container, "Microsoft Defender")
+        defender_frame.pack(fill="x", pady=10)
+        defender_frame.add_row("Antivirus Enabled", str(health.defender_enabled))
+        defender_frame.add_row("Real-time Protection", str(health.real_time_protection_enabled))
+        defender_frame.add_row("Signature Age (AV)", f"{health.antivirus_signature_age_days} days" if health.antivirus_signature_age_days else "Unknown")
+        defender_frame.add_row("Signature Age (AS)", f"{health.antispyware_signature_age_days} days" if health.antispyware_signature_age_days else "Unknown")
+
+        # Firewall section
+        firewall_frame = SectionFrame(self.security_container, "Windows Firewall")
+        firewall_frame.pack(fill="x", pady=10)
+        for profile in health.firewall_profiles:
+            profile_frame = SectionFrame(firewall_frame.content, f"{profile.name} Profile")
+            profile_frame.pack(fill="x", pady=5)
+            profile_frame.add_row("Enabled", str(profile.enabled))
+            profile_frame.add_row("Default Inbound", profile.default_inbound_action)
+            profile_frame.add_row("Default Outbound", profile.default_outbound_action)
+
+        # BitLocker section
+        if health.bitlocker_volumes:
+            bitlocker_frame = SectionFrame(self.security_container, "BitLocker Encryption")
+            bitlocker_frame.pack(fill="x", pady=10)
+            for volume in health.bitlocker_volumes:
+                vol_frame = SectionFrame(bitlocker_frame.content, f"Volume {volume.mount_point}")
+                vol_frame.pack(fill="x", pady=5)
+                vol_frame.add_row("Status", volume.volume_status)
+                vol_frame.add_row("Protection", volume.protection_status)
+                if volume.encryption_percentage is not None:
+                    vol_frame.add_row("Encrypted", f"{volume.encryption_percentage}%")
+
+        # Errors
+        if health.defender_error:
+            err = ctk.CTkLabel(self.security_container, text=f"Defender Error: {health.defender_error}", text_color="red")
+            err.pack(fill="x", padx=20, pady=5)
+        if health.firewall_error:
+            err = ctk.CTkLabel(self.security_container, text=f"Firewall Error: {health.firewall_error}", text_color="red")
+            err.pack(fill="x", padx=20, pady=5)
+
+    def _refresh_network_ui(self) -> None:
+        """Refresh Network tab diagnostics."""
+        def _collect():
+            try:
+                health = self.network_mod.get_network_health()
+                self._safe_after(lambda: self._apply_network_ui(health))
+            except Exception as e:
+                LOGGER.exception("Network refresh failed: %s", e)
+                self._safe_after(lambda: self._set_empty_state(self.network_container, f"Error: {e}"))
+
+        self._start_background_thread(_collect)
+
+    def _apply_network_ui(self, health) -> None:
+        """Apply network diagnostics to UI."""
+        for child in self.network_container.winfo_children():
+            child.destroy()
+        self.network_widgets.clear()
+
+        # Adapters section
+        if health.adapters:
+            adapters_frame = SectionFrame(self.network_container, "Network Adapters")
+            adapters_frame.pack(fill="x", pady=10)
+            for adapter in health.adapters:
+                adapter_frame = SectionFrame(adapters_frame.content, adapter.name)
+                adapter_frame.pack(fill="x", pady=5)
+                adapter_frame.add_row("Status", adapter.status)
+                adapter_frame.add_row("Link Speed", adapter.link_speed)
+
+        # DNS section
+        dns_frame = SectionFrame(self.network_container, "DNS Configuration")
+        dns_frame.pack(fill="x", pady=10)
+        for i, dns in enumerate(health.dns_servers, 1):
+            dns_frame.add_row(f"DNS Server {i}", dns)
+
+        # Gateway section
+        if health.gateway_addresses:
+            gateway_frame = SectionFrame(self.network_container, "Default Gateway")
+            gateway_frame.pack(fill="x", pady=10)
+            for i, gw in enumerate(health.gateway_addresses, 1):
+                gateway_frame.add_row(f"Gateway {i}", gw)
+
+        # Connectivity
+        conn_frame = SectionFrame(self.network_container, "Connectivity Status")
+        conn_frame.pack(fill="x", pady=10)
+        conn_frame.add_row("DNS Resolution", "OK" if health.dns_resolution_ok else "FAILED")
+        conn_frame.add_row("Internet Reachable", "Yes" if health.internet_reachable else "No")
+
+    def _refresh_startup_ui(self) -> None:
+        """Refresh Startup tab diagnostics."""
+        def _collect():
+            try:
+                health = self.startup_mod.get_startup_health()
+                self._safe_after(lambda: self._apply_startup_ui(health))
+            except Exception as e:
+                LOGGER.exception("Startup refresh failed: %s", e)
+                self._safe_after(lambda: self._set_empty_state(self.startup_container, f"Error: {e}"))
+
+        self._start_background_thread(_collect)
+
+    def _apply_startup_ui(self, health) -> None:
+        """Apply startup diagnostics to UI."""
+        for child in self.startup_container.winfo_children():
+            child.destroy()
+        self.startup_widgets.clear()
+
+        # Startup items
+        if health.startup_items:
+            startup_frame = SectionFrame(self.startup_container, "Startup Programs")
+            startup_frame.pack(fill="x", pady=10)
+            for item in health.startup_items[:20]:  # Limit display
+                item_frame = SectionFrame(startup_frame.content, item.name)
+                item_frame.pack(fill="x", pady=5)
+                item_frame.add_row("Command", item.command)
+                item_frame.add_row("Location", item.location)
+                item_frame.add_row("Enabled", str(item.enabled))
+                item_frame.add_row("Impact", item.impact_text)
+
+        # Slow services
+        if health.slow_startup_services:
+            slow_frame = SectionFrame(self.startup_container, "Slow-Starting Services")
+            slow_frame.pack(fill="x", pady=10)
+            for svc in health.slow_startup_services:
+                svc_frame = SectionFrame(slow_frame.content, svc.service_name)
+                svc_frame.pack(fill="x", pady=5)
+                svc_frame.add_row("Startup Time", f"{svc.startup_time_ms} ms" if svc.startup_time_ms else "Unknown")
+
+        # Automatic services
+        if health.automatic_services:
+            auto_frame = SectionFrame(self.startup_container, "Automatic Services (Sample)")
+            auto_frame.pack(fill="x", pady=10)
+            for svc in health.automatic_services[:15]:  # Limit display
+                svc_frame = SectionFrame(auto_frame.content, svc.display_name)
+                svc_frame.pack(fill="x", pady=5)
+                svc_frame.add_row("Service Name", svc.name)
+                svc_frame.add_row("State", svc.state)
+                svc_frame.add_row("Start Mode", svc.start_mode)
+
+    def _refresh_update_ui(self) -> None:
+        """Refresh Windows Update tab diagnostics."""
+        def _collect():
+            try:
+                health = self.update_mod.get_update_health()
+                self._safe_after(lambda: self._apply_update_ui(health))
+            except Exception as e:
+                LOGGER.exception("Update refresh failed: %s", e)
+                self._safe_after(lambda: self._set_empty_state(self.update_container, f"Error: {e}"))
+
+        self._start_background_thread(_collect)
+
+    def _on_scan_preset_changed(self, new_preset: str) -> None:
+        """Handle scan preset selection change."""
+        preset_map = {
+            "Quick Scan": ScanPreset.QUICK,
+            "Standard Scan": ScanPreset.STANDARD,
+            "Deep Scan": ScanPreset.DEEP,
+        }
+        preset = preset_map.get(new_preset, ScanPreset.STANDARD)
+        config = self.scan_preset_service.get_preset_config(preset)
+        tasks = self.scan_preset_service.get_tasks_for_preset(preset)
+        total_time = self.scan_preset_service.get_total_estimated_time(tasks)
+
+        desc = f"{config.description} - Includes: {', '.join(t.name for t in tasks[:3])}"
+        if len(tasks) > 3:
+            desc += f" +{len(tasks) - 3} more"
+        if config.requires_reboot:
+            desc += " [May require reboot]"
+
+        self._safe_after(lambda: self.preset_description_label.configure(text=desc))
+
+    def _on_trend_metric_changed(self, new_metric: str) -> None:
+        """Handle trend metric selection change."""
+        self._refresh_trends_ui()
+
+    def _refresh_trends_ui(self) -> None:
+        """Refresh Trends tab with historical data."""
+        def _collect():
+            try:
+                metric = self.trend_metric_var.get()
+                trend_data = self.snapshot_history.get_trend(metric, lookback_hours=24)
+                summary = self.snapshot_history.get_summary_stats()
+                self._safe_after(lambda: self._apply_trends_ui(trend_data, summary, metric))
+            except Exception as e:
+                LOGGER.exception("Trends refresh failed: %s", e)
+                self._safe_after(lambda: self._set_empty_state(self.trend_container, f"Error: {e}"))
+
+        self._start_background_thread(_collect)
+
+    def _apply_trends_ui(self, trend_data: dict, summary: dict, metric: str) -> None:
+        """Apply trend data to UI."""
+        for child in self.trend_container.winfo_children():
+            child.destroy()
+        self.trend_widgets.clear()
+
+        # Metric display names
+        metric_names = {
+            "health_score": "Health Score",
+            "cpu_usage": "CPU Usage",
+            "ram_usage_percent": "RAM Usage",
+            "disk_free_percent": "Disk Free Space",
+        }
+
+        # Trend direction indicators
+        trend_icons = {
+            "improving": "↑",
+            "declining": "↓",
+            "stable": "→",
+            "increasing": "↑",
+            "decreasing": "↓",
+            "new": "New",
+            "no_data": "—",
+        }
+
+        trend_colors = {
+            "improving": "green",
+            "declining": "red",
+            "stable": "gray",
+            "increasing": "orange",
+            "decreasing": "orange",
+            "new": "blue",
+            "no_data": "gray",
+        }
+
+        # Current value frame
+        current_frame = SectionFrame(self.trend_container, f"Current {metric_names.get(metric, metric)}")
+        current_frame.pack(fill="x", pady=10)
+
+        current_value = trend_data.get("current")
+        if current_value is not None:
+            if metric in ["cpu_usage", "ram_usage_percent"]:
+                value_text = f"{current_value:.1f}%"
+            elif metric == "health_score":
+                value_text = f"{current_value}/100"
+            elif metric == "disk_free_percent":
+                value_text = f"{current_value:.1f}% free"
+            else:
+                value_text = str(current_value)
+
+            current_frame.add_row("Current Value", value_text)
+        else:
+            current_frame.add_row("Current Value", "No data")
+
+        # Trend frame
+        trend_frame = SectionFrame(self.trend_container, "24h Trend")
+        trend_frame.pack(fill="x", pady=10)
+
+        trend_direction = trend_data.get("trend_direction", "no_data")
+        trend_icon = trend_icons.get(trend_direction, "—")
+        trend_color = trend_colors.get(trend_direction, "gray")
+
+        change = trend_data.get("change", 0)
+        change_text = f"{change:+.2f}" if change != 0 else "0"
+
+        trend_frame.add_row("Direction", f"{trend_icon} {trend_direction}")
+        trend_frame.add_row("Change (24h)", change_text)
+
+        previous = trend_data.get("previous")
+        if previous is not None:
+            trend_frame.add_row("Previous", str(previous))
+
+        # Summary stats
+        if summary.get("total_snapshots", 0) > 0:
+            stats_frame = SectionFrame(self.trend_container, "Summary Statistics")
+            stats_frame.pack(fill="x", pady=10)
+
+            stats_frame.add_row("Total Snapshots", str(summary.get("total_snapshots", 0)))
+
+            if metric == "health_score" and summary.get("avg_health_score"):
+                stats_frame.add_row("Average", f"{summary['avg_health_score']:.1f}")
+            elif metric == "cpu_usage":
+                if summary.get("avg_cpu_usage"):
+                    stats_frame.add_row("Average", f"{summary['avg_cpu_usage']:.1f}%")
+                if summary.get("max_cpu_usage"):
+                    stats_frame.add_row("Peak", f"{summary['max_cpu_usage']:.1f}%")
+            elif metric == "ram_usage_percent":
+                if summary.get("avg_ram_usage"):
+                    stats_frame.add_row("Average", f"{summary['avg_ram_usage']:.1f}%")
+                if summary.get("max_ram_usage"):
+                    stats_frame.add_row("Peak", f"{summary['max_ram_usage']:.1f}%")
+
+        # Empty state if no data
+        if trend_data.get("current") is None and summary.get("total_snapshots", 0) == 0:
+            self._set_empty_state(self.trend_container, "No snapshot history yet. Snapshots are saved automatically every minute while the app runs.")
+
+    def _apply_update_ui(self, health) -> None:
+        """Apply update diagnostics to UI."""
+        for child in self.update_container.winfo_children():
+            child.destroy()
+        self.update_widgets.clear()
+
+        # Services section
+        services_frame = SectionFrame(self.update_container, "Update Services")
+        services_frame.pack(fill="x", pady=10)
+        services_frame.add_row("Windows Update", health.update_service_state)
+        services_frame.add_row("BITS", health.bits_service_state)
+        services_frame.add_row("Medic Service", health.medic_service_state)
+        services_frame.add_row("Orchestrator", health.orchestrator_service_state)
+
+        # Reboot status
+        reboot_frame = SectionFrame(self.update_container, "Reboot Status")
+        reboot_frame.pack(fill="x", pady=10)
+        reboot_text = "Pending reboot detected" if health.reboot_pending else "No pending reboot"
+        reboot_color = "orange" if health.reboot_pending else "green"
+        reboot_label = ctk.CTkLabel(reboot_frame.content, text=reboot_text, text_color=reboot_color, font=("Roboto", 14, "bold"))
+        reboot_label.pack(pady=10)
+
+        if health.error_message:
+            err = ctk.CTkLabel(self.update_container, text=f"Error: {health.error_message}", text_color="red")
+            err.pack(fill="x", padx=20, pady=5)
+
     @staticmethod
     def _temp_alert_color(value: str) -> str | None:
         """Return ``'red'`` if *value* represents a temperature ≥ threshold."""
@@ -990,6 +1599,91 @@ class App(ctk.CTk):
         except Exception as e:
             LOGGER.exception("Report export failed: %s", e)
             messagebox.showerror("Export Failed", str(e))
+
+    def _export_issue_bundle(self) -> None:
+        """Export complete diagnostic bundle for support/debugging."""
+        path = filedialog.asksaveasfilename(
+            defaultextension=".zip",
+            filetypes=[("Zip files", "*.zip"), ("All files", "*.*")],
+            initialfile=f"Master_Sentinal_Bundle_{datetime.now():%Y%m%d_%H%M%S}.zip",
+        )
+        if not path:
+            return
+
+        try:
+            # Build diagnostic data from current state
+            diagnostic_data = self._build_report_payload()
+
+            # Create exporter with current data
+            exporter = IssueBundleExporter(diagnostic_data=diagnostic_data)
+
+            # Show progress message
+            self._safe_after(lambda: messagebox.showinfo(
+                "Exporting...",
+                "Collecting system information and logs. This may take a minute.",
+            ))
+
+            # Export bundle
+            success = exporter.export_bundle(path)
+
+            if success:
+                messagebox.showinfo("Export Complete", f"Diagnostic bundle saved to:\n{path}")
+            else:
+                messagebox.showerror("Export Failed", "Failed to create diagnostic bundle. Check logs for details.")
+
+        except Exception as e:
+            LOGGER.exception("Issue bundle export failed: %s", e)
+            messagebox.showerror("Export Failed", str(e))
+
+    def _on_monitoring_alert(self, alert) -> None:
+        """Handle monitoring alert by showing a toast notification."""
+        def _show_toast():
+            # Clear previous toasts
+            for child in self.toast_container.winfo_children():
+                child.destroy()
+            self.toast_labels.clear()
+
+            # Set background color based on severity
+            color_map = {
+                AlertSeverity.INFO: "#4f83cc",
+                AlertSeverity.WARNING: "#f4b400",
+                AlertSeverity.CRITICAL: "#d93025",
+            }
+            bg_color = color_map.get(alert.severity, "gray")
+
+            # Title label
+            title = ctk.CTkLabel(
+                self.toast_container,
+                text=f"{alert.severity.value.upper()}: {alert.title}",
+                font=("Roboto", 12, "bold"),
+                text_color=bg_color,
+                anchor="w",
+            )
+            title.pack(fill="x", padx=10, pady=(10, 5))
+
+            # Message label
+            msg = ctk.CTkLabel(
+                self.toast_container,
+                text=alert.message,
+                font=("Roboto", 11),
+                text_color=("gray10", "gray90"),
+                anchor="w",
+                justify="left",
+                wraplength=300,
+            )
+            msg.pack(fill="x", padx=10, pady=(0, 10))
+
+            # Show toast
+            self.toast_container.grid(row=0, column=0, columnspan=2, sticky="ne", padx=20, pady=20)
+
+            # Auto-hide after 10 seconds
+            def _hide_toast():
+                if self.toast_container.winfo_viewable():
+                    self.toast_container.grid_forget()
+
+            self.after(10000, _hide_toast)
+
+        self._safe_after(_show_toast)
 
     # ------------------------------------------------------------------
     # Shutdown

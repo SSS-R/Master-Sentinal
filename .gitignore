@@ -24,7 +24,8 @@ battery-report.html
 # IDE
 .vscode/
 .idea/
-
+CLAUDE.md
+.claude/
 # Tests
 tests/__pycache__/
 .pytest_cache/
