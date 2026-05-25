@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from services.error_explanations import explain_error_message
+
 
 @dataclass(frozen=True)
 class CPUInfo:
@@ -89,6 +91,8 @@ class ScanResult:
     display_text: str
     status_color: str
     log_message: str = ""
+    error_code: str = ""
+    basic_reason: str = ""
 
     @classmethod
     def from_runner_output(cls, task_name: str, success: bool, output: str) -> ScanResult:
@@ -104,6 +108,8 @@ class ScanResult:
                 log_message=f"[{task_name}] SUCCESS: {output}",
             )
 
+        explanation = explain_error_message(output)
+
         if "Not a Laptop" in output:
             return cls(
                 task_name=task_name,
@@ -111,6 +117,8 @@ class ScanResult:
                 message=output,
                 display_text="Skipped (Not a Laptop)",
                 status_color="yellow",
+                error_code=explanation.error_code,
+                basic_reason=explanation.basic_reason,
             )
 
         return cls(
@@ -120,12 +128,15 @@ class ScanResult:
             display_text=output,
             status_color="red",
             log_message=f"[{task_name}] {output}",
+            error_code=explanation.error_code,
+            basic_reason=explanation.basic_reason,
         )
 
     @classmethod
     def from_exception(cls, task_name: str, exc: Exception) -> ScanResult:
         """Build a scan result from a runner exception."""
         message = str(exc)
+        explanation = explain_error_message(message)
         return cls(
             task_name=task_name,
             success=False,
@@ -133,6 +144,8 @@ class ScanResult:
             display_text=f"Error: {message[:50]}",
             status_color="red",
             log_message=f"[{task_name}] EXCEPTION: {message}",
+            error_code=explanation.error_code,
+            basic_reason=explanation.basic_reason,
         )
 
     @staticmethod

@@ -29,15 +29,19 @@ from modules.disk_diag import DiskDiagnostic
 from modules.full_scan import FullScanDiagnostic
 from modules.gpu_diag import GPUDiagnostic
 from modules.ram_diag import RAMDiagnostic
-from modules.security_diag import SecurityDiagnostic
-from modules.network_diag import NetworkDiagnostic
-from modules.startup_diag import StartupDiagnostic
-from modules.update_diag import WindowsUpdateDiagnostic
 from modules.driver_diag import DriverDiagnostic
 from modules.event_log_diag import EventLogDiagnostic
 from services.full_scan_service import FullScanService, ScanTask
 from services.app_logging import get_logger
-from services.live_snapshot import DiagnosticSnapshot, LiveSnapshotCollector
+from services.error_explanations import explain_error_message
+from services.live_snapshot import (
+    DiagnosticSnapshot,
+    LiveSnapshotCollector,
+    NetworkDiagnostic as LiveNetworkDiagnostic,
+    SecurityDiagnostic as LiveSecurityDiagnostic,
+    StartupServiceDiagnostic,
+    WindowsUpdateDiagnostic as LiveWindowsUpdateDiagnostic,
+)
 from services.report_exporter import write_csv_report, write_html_report, write_json_report
 from services.snapshot_history import SnapshotHistory
 from services.monitoring_alerts import MonitoringAlerts, AlertConfig, AlertSeverity
@@ -113,10 +117,6 @@ class App(ctk.CTk):
         self.disk_mod = DiskDiagnostic()
         self.board_mod = BoardDiagnostic()
         self.full_scan_mod = FullScanDiagnostic()
-        self.security_mod = SecurityDiagnostic()
-        self.network_mod = NetworkDiagnostic()
-        self.startup_mod = StartupDiagnostic()
-        self.update_mod = WindowsUpdateDiagnostic()
         self.driver_mod = DriverDiagnostic()
         self.event_log_mod = EventLogDiagnostic()
         self.snapshot_collector = LiveSnapshotCollector(
@@ -125,6 +125,10 @@ class App(ctk.CTk):
             gpu_mod=self.gpu_mod,
             disk_mod=self.disk_mod,
         )
+        self.security_mod = self.snapshot_collector.security_mod or LiveSecurityDiagnostic()
+        self.network_mod = self.snapshot_collector.network_mod or LiveNetworkDiagnostic()
+        self.startup_mod = self.snapshot_collector.startup_mod or StartupServiceDiagnostic()
+        self.update_mod = self.snapshot_collector.windows_update_mod or LiveWindowsUpdateDiagnostic()
         # New services for v1.0
         self.snapshot_history = SnapshotHistory()
         self.monitoring_alerts = MonitoringAlerts()
@@ -136,6 +140,7 @@ class App(ctk.CTk):
         self.last_scan_finished_at: datetime | None = None
         self._active_scan_started_at = 0.0
         self._background_threads: list[threading.Thread] = []
+        self._refresh_in_progress: dict[str, bool] = {}
 
         # Dashboard string vars
         self.cpu_usage_var = ctk.StringVar(value="0%")
@@ -342,11 +347,11 @@ class App(ctk.CTk):
         self.security_container.pack(fill="both", expand=True, padx=20, pady=10)
         self._set_empty_state(self.security_container, "Click 'Refresh' to load security status...")
 
-        refresh_btn = ctk.CTkButton(
+        self.security_refresh_btn = ctk.CTkButton(
             sf, text="Refresh Status", height=36,
             command=self._refresh_security_ui,
         )
-        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+        self.security_refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
 
         self.security_widgets: dict[str, InfoRow] = {}
 
@@ -372,11 +377,11 @@ class App(ctk.CTk):
         self.network_container.pack(fill="both", expand=True, padx=20, pady=10)
         self._set_empty_state(self.network_container, "Click 'Refresh' to load network status...")
 
-        refresh_btn = ctk.CTkButton(
+        self.network_refresh_btn = ctk.CTkButton(
             sf, text="Refresh Status", height=36,
             command=self._refresh_network_ui,
         )
-        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+        self.network_refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
 
         self.network_widgets: dict[str, dict[str, InfoRow]] = {}
 
@@ -402,11 +407,11 @@ class App(ctk.CTk):
         self.startup_container.pack(fill="both", expand=True, padx=20, pady=10)
         self._set_empty_state(self.startup_container, "Click 'Refresh' to load startup items...")
 
-        refresh_btn = ctk.CTkButton(
+        self.startup_refresh_btn = ctk.CTkButton(
             sf, text="Refresh Status", height=36,
             command=self._refresh_startup_ui,
         )
-        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+        self.startup_refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
 
         self.startup_widgets: dict[str, InfoRow] = {}
 
@@ -432,11 +437,11 @@ class App(ctk.CTk):
         self.update_container.pack(fill="both", expand=True, padx=20, pady=10)
         self._set_empty_state(self.update_container, "Click 'Refresh' to load update status...")
 
-        refresh_btn = ctk.CTkButton(
+        self.update_refresh_btn = ctk.CTkButton(
             sf, text="Refresh Status", height=36,
             command=self._refresh_update_ui,
         )
-        refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
+        self.update_refresh_btn.pack(fill="x", padx=20, pady=(0, 20))
 
         self.update_widgets: dict[str, InfoRow] = {}
 
@@ -812,6 +817,8 @@ class App(ctk.CTk):
                 "message": result.message,
                 "display_text": result.display_text,
                 "log_message": result.log_message,
+                "error_code": result.error_code,
+                "basic_reason": result.basic_reason,
             }
         )
         if result.success:
@@ -1070,6 +1077,55 @@ class App(ctk.CTk):
         )
         label.pack(fill="x", padx=10, pady=10)
 
+    @staticmethod
+    def _append_error_label(container: ctk.CTkBaseClass, title: str, message: str) -> None:
+        """Add a wrapped error label when a section collected partial data with warnings."""
+        if not message:
+            return
+        label = ctk.CTkLabel(
+            container,
+            text=f"{title}: {message}",
+            text_color="red",
+            anchor="w",
+            justify="left",
+            wraplength=1200,
+        )
+        label.pack(fill="x", padx=20, pady=5)
+
+    def _run_async_refresh(
+        self,
+        section_key: str,
+        container: ctk.CTkBaseClass,
+        refresh_button: ctk.CTkButton,
+        loading_text: str,
+        collector: Callable[[], Any],
+        apply_callback: Callable[[Any], None],
+        error_context: str,
+    ) -> None:
+        """Run a refresh job once at a time while keeping the UI responsive."""
+        if self._refresh_in_progress.get(section_key):
+            return
+
+        self._refresh_in_progress[section_key] = True
+        refresh_button.configure(state="disabled", text="Refreshing...")
+        self._set_empty_state(container, loading_text)
+
+        def _collect() -> None:
+            try:
+                payload = collector()
+                self._safe_after(lambda: apply_callback(payload))
+            except Exception as e:
+                LOGGER.exception("%s refresh failed: %s", error_context, e)
+                self._safe_after(lambda: self._set_empty_state(container, f"{error_context} refresh failed: {e}"))
+            finally:
+                def _reset_button() -> None:
+                    self._refresh_in_progress[section_key] = False
+                    refresh_button.configure(state="normal", text="Refresh Status")
+
+                self._safe_after(_reset_button)
+
+        self._start_background_thread(_collect)
+
     def _update_typed_device_section(
         self,
         container: ctk.CTkFrame,
@@ -1130,15 +1186,15 @@ class App(ctk.CTk):
 
     def _refresh_security_ui(self) -> None:
         """Refresh Security tab diagnostics."""
-        def _collect():
-            try:
-                health = self.security_mod.get_security_health()
-                self._safe_after(lambda: self._apply_security_ui(health))
-            except Exception as e:
-                LOGGER.exception("Security refresh failed: %s", e)
-                self._safe_after(lambda: self._set_empty_state(self.security_container, f"Error: {e}"))
-
-        self._start_background_thread(_collect)
+        self._run_async_refresh(
+            section_key="security",
+            container=self.security_container,
+            refresh_button=self.security_refresh_btn,
+            loading_text="Loading security status...",
+            collector=self.security_mod.get_security_health,
+            apply_callback=self._apply_security_ui,
+            error_context="Security",
+        )
 
     def _apply_security_ui(self, health) -> None:
         """Apply security diagnostics to UI."""
@@ -1178,23 +1234,25 @@ class App(ctk.CTk):
 
         # Errors
         if health.defender_error:
-            err = ctk.CTkLabel(self.security_container, text=f"Defender Error: {health.defender_error}", text_color="red")
-            err.pack(fill="x", padx=20, pady=5)
+            self._append_error_label(self.security_container, "Defender", health.defender_error)
         if health.firewall_error:
-            err = ctk.CTkLabel(self.security_container, text=f"Firewall Error: {health.firewall_error}", text_color="red")
-            err.pack(fill="x", padx=20, pady=5)
+            self._append_error_label(self.security_container, "Firewall", health.firewall_error)
+        if health.bitlocker_error:
+            self._append_error_label(self.security_container, "BitLocker", health.bitlocker_error)
+        if health.error_message and not (health.defender_error or health.firewall_error or health.bitlocker_error):
+            self._append_error_label(self.security_container, "Security", health.error_message)
 
     def _refresh_network_ui(self) -> None:
         """Refresh Network tab diagnostics."""
-        def _collect():
-            try:
-                health = self.network_mod.get_network_health()
-                self._safe_after(lambda: self._apply_network_ui(health))
-            except Exception as e:
-                LOGGER.exception("Network refresh failed: %s", e)
-                self._safe_after(lambda: self._set_empty_state(self.network_container, f"Error: {e}"))
-
-        self._start_background_thread(_collect)
+        self._run_async_refresh(
+            section_key="network",
+            container=self.network_container,
+            refresh_button=self.network_refresh_btn,
+            loading_text="Loading network status...",
+            collector=self.network_mod.get_network_health,
+            apply_callback=self._apply_network_ui,
+            error_context="Network",
+        )
 
     def _apply_network_ui(self, health) -> None:
         """Apply network diagnostics to UI."""
@@ -1230,18 +1288,20 @@ class App(ctk.CTk):
         conn_frame.pack(fill="x", pady=10)
         conn_frame.add_row("DNS Resolution", "OK" if health.dns_resolution_ok else "FAILED")
         conn_frame.add_row("Internet Reachable", "Yes" if health.internet_reachable else "No")
+        if health.error_message:
+            self._append_error_label(self.network_container, "Network", health.error_message)
 
     def _refresh_startup_ui(self) -> None:
         """Refresh Startup tab diagnostics."""
-        def _collect():
-            try:
-                health = self.startup_mod.get_startup_health()
-                self._safe_after(lambda: self._apply_startup_ui(health))
-            except Exception as e:
-                LOGGER.exception("Startup refresh failed: %s", e)
-                self._safe_after(lambda: self._set_empty_state(self.startup_container, f"Error: {e}"))
-
-        self._start_background_thread(_collect)
+        self._run_async_refresh(
+            section_key="startup",
+            container=self.startup_container,
+            refresh_button=self.startup_refresh_btn,
+            loading_text="Loading startup programs and services...",
+            collector=self.startup_mod.get_startup_health,
+            apply_callback=self._apply_startup_ui,
+            error_context="Startup",
+        )
 
     def _apply_startup_ui(self, health) -> None:
         """Apply startup diagnostics to UI."""
@@ -1280,18 +1340,26 @@ class App(ctk.CTk):
                 svc_frame.add_row("Service Name", svc.name)
                 svc_frame.add_row("State", svc.state)
                 svc_frame.add_row("Start Mode", svc.start_mode)
+        if health.startup_error:
+            self._append_error_label(self.startup_container, "Startup Items", health.startup_error)
+        if health.slow_startup_error:
+            self._append_error_label(self.startup_container, "Slow Startup", health.slow_startup_error)
+        if health.service_error:
+            self._append_error_label(self.startup_container, "Automatic Services", health.service_error)
+        if health.error_message and not (health.startup_error or health.slow_startup_error or health.service_error):
+            self._append_error_label(self.startup_container, "Startup", health.error_message)
 
     def _refresh_update_ui(self) -> None:
         """Refresh Windows Update tab diagnostics."""
-        def _collect():
-            try:
-                health = self.update_mod.get_update_health()
-                self._safe_after(lambda: self._apply_update_ui(health))
-            except Exception as e:
-                LOGGER.exception("Update refresh failed: %s", e)
-                self._safe_after(lambda: self._set_empty_state(self.update_container, f"Error: {e}"))
-
-        self._start_background_thread(_collect)
+        self._run_async_refresh(
+            section_key="update",
+            container=self.update_container,
+            refresh_button=self.update_refresh_btn,
+            loading_text="Loading Windows Update health...",
+            collector=self.update_mod.get_windows_update_health,
+            apply_callback=self._apply_update_ui,
+            error_context="Update",
+        )
 
     def _on_scan_preset_changed(self, new_preset: str) -> None:
         """Handle scan preset selection change."""
@@ -1548,6 +1616,8 @@ class App(ctk.CTk):
                     "category": issue.category,
                     "message": issue.message,
                     "severity": issue.severity,
+                    "error_code": explain_error_message(issue.message).error_code,
+                    "basic_reason": explain_error_message(issue.message).basic_reason,
                 }
                 for issue in diagnostic_report.entries()
             ] if diagnostic_report is not None else [],

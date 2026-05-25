@@ -52,6 +52,7 @@ class _DummyApp:
     _device_rows = staticmethod(App._device_rows)
     _is_running_as_admin = App._is_running_as_admin
     _finalize_scan_status = App._finalize_scan_status
+    _run_async_refresh = App._run_async_refresh
 
     def __init__(self):
         self.cpu_usage_var = _Value("12%")
@@ -90,14 +91,45 @@ class _DummyApp:
         self.last_scan_started_at = None
         self.last_scan_finished_at = None
         self._status_updates = []
+        self._refresh_in_progress = {}
+        self._empty_state_messages = []
 
     def _ui_scan_status(self, row_map, name, text, color):
         self._status_updates.append((row_map, name, text, color))
 
+    def _safe_after(self, callback):
+        callback()
+
+    def _start_background_thread(self, target, *args):
+        target(*args)
+        return object()
+
+    def _set_empty_state(self, container, message):
+        self._empty_state_messages.append((container, message))
+
+
+class _Button:
+    def __init__(self):
+        self.state = "normal"
+        self.text = "Refresh Status"
+
+    def configure(self, **kwargs):
+        self.state = kwargs.get("state", self.state)
+        self.text = kwargs.get("text", self.text)
+
 
 def test_build_report_payload_includes_health_and_scan_data():
     app = _DummyApp()
-    app.scan_logs = [{"task": "SFC", "status": "success", "duration": "1.0s", "message": "OK"}]
+    app.scan_logs = [
+        {
+            "task": "SFC",
+            "status": "success",
+            "duration": "1.0s",
+            "message": "OK",
+            "error_code": "",
+            "basic_reason": "",
+        }
+    ]
 
     payload = app._build_report_payload()
 
@@ -120,6 +152,8 @@ def test_finalize_scan_status_records_log_entry():
             "display_text": "Timed out",
             "status_color": "red",
             "log_message": "[SFC] FAILED: Timed out",
+            "error_code": "",
+            "basic_reason": "The check took longer than the allowed time.",
         },
     )()
 
@@ -127,4 +161,28 @@ def test_finalize_scan_status_records_log_entry():
 
     assert app.scan_logs[0]["task"] == "SFC"
     assert app.scan_logs[0]["duration"] == "3.2s"
+    assert app.scan_logs[0]["basic_reason"] == "The check took longer than the allowed time."
     assert app._status_updates[0][2] == "Timed out (3.2s)"
+
+
+def test_run_async_refresh_shows_loading_and_restores_button():
+    app = _DummyApp()
+    button = _Button()
+    applied = []
+    container = object()
+
+    app._run_async_refresh(
+        section_key="security",
+        container=container,
+        refresh_button=button,
+        loading_text="Loading security status...",
+        collector=lambda: "payload",
+        apply_callback=applied.append,
+        error_context="Security",
+    )
+
+    assert app._empty_state_messages == [(container, "Loading security status...")]
+    assert applied == ["payload"]
+    assert button.state == "normal"
+    assert button.text == "Refresh Status"
+    assert app._refresh_in_progress["security"] is False

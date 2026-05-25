@@ -38,3 +38,10 @@ def test_scan_result_formats_exceptions():
     assert result.display_text == "Error: boom"
     assert result.status_color == "red"
     assert result.log_message == "[SFC] EXCEPTION: boom"
+
+
+def test_scan_result_extracts_basic_reason_for_known_error():
+    result = ScanResult.from_runner_output("DISM", False, "Error: 3017")
+
+    assert result.error_code == "3017"
+    assert "pending restart" in result.basic_reason.lower()

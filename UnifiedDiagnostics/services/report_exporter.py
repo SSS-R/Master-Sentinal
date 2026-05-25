@@ -13,16 +13,16 @@ def write_csv_report(path: str, payload: dict[str, Any]) -> None:
     """Write a diagnostics report payload as CSV."""
     with open(path, "w", newline="", encoding="utf-8") as report_file:
         writer = csv.writer(report_file)
-        writer.writerow(["Section", "Key", "Value", "Detail", "State", "Persistence"])
+        writer.writerow(["Section", "Key", "Value", "Detail", "State", "Persistence", "Error Code", "Basic Reason"])
 
         metadata = payload["metadata"]
         for key, value in metadata.items():
-            writer.writerow(["Metadata", _label(key), value])
+            writer.writerow(["Metadata", _label(key), value, "", "", "", "", ""])
 
         sections = payload["sections"]
         for section_name, rows in sections.items():
             for key, value in rows.items():
-                writer.writerow([section_name, key, value])
+                writer.writerow([section_name, key, value, "", "", "", "", ""])
 
         for idx, finding in enumerate(payload["health"]["findings"], start=1):
             writer.writerow([
@@ -32,6 +32,8 @@ def write_csv_report(path: str, payload: dict[str, Any]) -> None:
                 finding.get("recommended_action", ""),
                 finding.get("state", ""),
                 finding.get("persistence", ""),
+                "",
+                "",
             ])
 
         for entry in payload.get("scan_logs", []):
@@ -42,6 +44,8 @@ def write_csv_report(path: str, payload: dict[str, Any]) -> None:
                 entry["message"],
                 "",
                 "",
+                entry.get("error_code", ""),
+                entry.get("basic_reason", ""),
             ])
 
         for issue in payload.get("diagnostic_report", []):
@@ -52,6 +56,8 @@ def write_csv_report(path: str, payload: dict[str, Any]) -> None:
                 issue.get("category", ""),
                 issue.get("severity", ""),
                 "",
+                issue.get("error_code", ""),
+                issue.get("basic_reason", ""),
             ])
 
 
@@ -85,6 +91,8 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
         f"<td>{html.escape(entry['status'])}</td>"
         f"<td>{html.escape(entry['duration'])}</td>"
         f"<td>{html.escape(entry['message'])}</td>"
+        f"<td>{html.escape(entry.get('error_code', ''))}</td>"
+        f"<td>{html.escape(entry.get('basic_reason', ''))}</td>"
         "</tr>"
         for entry in payload.get("scan_logs", [])
     )
@@ -92,7 +100,7 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
     if scan_rows:
         scan_block = (
             "<h2>Scan Logs</h2>"
-            "<table><tr><th>Task</th><th>Status</th><th>Duration</th><th>Message</th></tr>"
+            "<table><tr><th>Task</th><th>Status</th><th>Duration</th><th>Message</th><th>Error code</th><th>Basic reason</th></tr>"
             f"{scan_rows}</table>"
         )
 
@@ -102,6 +110,8 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
         f"<td>{html.escape(issue.get('category', ''))}</td>"
         f"<td>{html.escape(issue['message'])}</td>"
         f"<td>{html.escape(issue.get('severity', ''))}</td>"
+        f"<td>{html.escape(issue.get('error_code', ''))}</td>"
+        f"<td>{html.escape(issue.get('basic_reason', ''))}</td>"
         "</tr>"
         for issue in payload.get("diagnostic_report", [])
     )
@@ -109,7 +119,7 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
     if diagnostic_rows:
         diagnostic_block = (
             "<h2>Diagnostic Issues</h2>"
-            "<table><tr><th>Source</th><th>Category</th><th>Message</th><th>Severity</th></tr>"
+            "<table><tr><th>Source</th><th>Category</th><th>Message</th><th>Severity</th><th>Error code</th><th>Basic reason</th></tr>"
             f"{diagnostic_rows}</table>"
         )
 
