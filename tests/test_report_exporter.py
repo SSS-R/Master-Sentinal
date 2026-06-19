@@ -30,7 +30,9 @@ def test_html_report_includes_health_actions(tmp_path):
     write_html_report(str(path), payload)
 
     html = path.read_text(encoding="utf-8")
-    assert "Health score" in html
+    # Plain-language summary section with the score and the recommended action.
+    assert "What's going on with your PC" in html
+    assert "88/100" in html
     assert "Run updates" in html
 
 

@@ -19,6 +19,12 @@ LOGGER = get_logger(__name__)
 class GPUDiagnostic:
     """Gathers GPU information using nvidia-smi (preferred) or WMI."""
 
+    def __init__(self) -> None:
+        # WMI exposes only static GPU info (no live load), so the fallback result
+        # is cached to avoid rebuilding a WMI connection on every fast-loop tick
+        # on machines without nvidia-smi.
+        self._wmi_fallback_cache: list[GPUDevice] | None = None
+
     def get_gpu_devices(self) -> list[GPUDevice]:
         """Return structured GPU devices with load, memory, and temperature data."""
         gpus: list[GPUDevice] = []
@@ -59,8 +65,10 @@ class GPUDiagnostic:
             LOGGER.info("NVIDIA-SMI lookup skipped: %s", exc)
             pass
 
-        # 2. Fallback to WMI
+        # 2. Fallback to WMI (static info only — cached after first success)
         if not gpus:
+            if self._wmi_fallback_cache is not None:
+                return list(self._wmi_fallback_cache)
             try:
                 pythoncom.CoInitialize()
                 c = wmi.WMI()
@@ -80,6 +88,8 @@ class GPUDiagnostic:
                             total_memory_text=ram_mb,
                         )
                     )
+                # Cache only a clean, successful read for reuse on later ticks.
+                self._wmi_fallback_cache = list(gpus)
             except Exception as e:
                 LOGGER.warning("GPU WMI fallback failed: %s", e)
                 gpus.append(GPUDevice(error_message=friendly_exception_message(e, "GPU diagnostics")))

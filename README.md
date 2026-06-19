@@ -98,6 +98,20 @@ See [docs/diagnostics-and-permissions.md](docs/diagnostics-and-permissions.md) f
 - `packaging/` Windows version metadata and packaging assets
 - `.github/` workflow and repository templates
 
+## Support
+
+Master Sentinal is free and open source, and it will always be free. If it
+helped you, the best ways to support the project are:
+
+- ⭐ Star the repository on GitHub so more people find it
+- 🐛 Report bugs or suggest features via [Issues](https://github.com/SSS-R/Master-Sentinal/issues)
+- 🔧 Contribute code — see [CONTRIBUTING.md](CONTRIBUTING.md)
+- ❤️ Optional donations are welcome but never required
+
+When reporting a bug, you can attach a diagnostic bundle (Dashboard → **Export
+Diagnostic Bundle**). Choose **Anonymize** when prompted to automatically remove
+your Windows username, PC name, and hardware serial numbers before sharing.
+
 ## Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.

@@ -67,8 +67,56 @@ def write_json_report(path: str, payload: dict[str, Any]) -> None:
         json.dump(payload, report_file, indent=2)
 
 
+_STATUS_LEAD: dict[str, str] = {
+    "ok": "Good news — no urgent problems were found on this PC.",
+    "info": "This PC looks generally healthy. There are a few things worth knowing about.",
+    "warning": "This PC has some warnings that are worth looking into when you have time.",
+    "critical": "This PC has critical issues that should be addressed soon.",
+}
+
+
+def _plain_language_summary(payload: dict[str, Any]) -> str:
+    """Build a friendly, non-technical summary block for the report header."""
+    health = payload.get("health", {})
+    status = str(health.get("overall_status") or "").lower()
+    headline = str(health.get("headline") or "")
+    score = health.get("score", "")
+    rollup = str(health.get("severity_rollup") or "")
+    findings = health.get("findings", [])
+
+    lead = _STATUS_LEAD.get(status, "Here is a summary of your PC's current health.")
+    score_line = f"Overall health score: <strong>{html.escape(str(score))}/100</strong>"
+    if rollup:
+        score_line += f" ({html.escape(rollup)})"
+
+    items = []
+    for finding in findings[:6]:
+        title = html.escape(str(finding.get("title", "")))
+        message = html.escape(str(finding.get("message", "")))
+        action = html.escape(str(finding.get("recommended_action", "")))
+        severity = html.escape(str(finding.get("severity", "")))
+        action_html = f"<div class='action'><em>What to do:</em> {action}</div>" if action else ""
+        items.append(
+            f"<li class='finding sev-{severity}'><strong>{title}</strong> — {message}{action_html}</li>"
+        )
+
+    findings_html = f"<ul class='findings'>{''.join(items)}</ul>" if items else ""
+    headline_html = f"<p class='headline'>{html.escape(headline)}</p>" if headline else ""
+
+    return (
+        "<section class='summary'>"
+        "<h2>What's going on with your PC</h2>"
+        f"<p class='lead'>{html.escape(lead)}</p>"
+        f"{headline_html}"
+        f"<p class='score'>{score_line}</p>"
+        f"{findings_html}"
+        "</section>"
+    )
+
+
 def write_html_report(path: str, payload: dict[str, Any]) -> None:
     """Write a diagnostics report payload as standalone HTML."""
+    plain_summary = _plain_language_summary(payload)
     metadata_rows = _table_rows(payload["metadata"])
     section_blocks = "\n".join(
         f"<h2>{html.escape(section_name)}</h2><table>{_table_rows(rows)}</table>"
@@ -129,17 +177,27 @@ def write_html_report(path: str, payload: dict[str, Any]) -> None:
   <meta charset="utf-8">
   <title>Master Sentinal Report</title>
   <style>
-    body {{ font-family: Segoe UI, Arial, sans-serif; margin: 32px; line-height: 1.45; }}
+    body {{ font-family: Segoe UI, Arial, sans-serif; margin: 32px; line-height: 1.45; color: #1f2937; }}
     h1, h2 {{ color: #1f2937; }}
     table {{ border-collapse: collapse; width: 100%; margin: 12px 0 24px; }}
     th, td {{ border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }}
     th {{ background: #f6f8fa; }}
     .score {{ font-size: 18px; font-weight: 700; }}
+    .summary {{ background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; padding: 16px 20px; margin: 16px 0 28px; }}
+    .summary .lead {{ font-size: 18px; font-weight: 600; margin: 4px 0; }}
+    .summary .headline {{ color: #57606a; margin: 4px 0 12px; }}
+    .findings {{ list-style: none; padding: 0; margin: 12px 0 0; }}
+    .findings .finding {{ border-left: 4px solid #d0d7de; padding: 8px 12px; margin: 8px 0; background: #fff; border-radius: 0 6px 6px 0; }}
+    .findings .sev-critical {{ border-left-color: #d93025; }}
+    .findings .sev-warning {{ border-left-color: #f4b400; }}
+    .findings .sev-info {{ border-left-color: #4f83cc; }}
+    .findings .sev-ok {{ border-left-color: #2e8b57; }}
+    .findings .action {{ margin-top: 4px; color: #57606a; }}
   </style>
 </head>
 <body>
   <h1>Master Sentinal Report</h1>
-  <p class="score">Health score: {html.escape(str(payload["health"].get("score", "")))}/100</p>
+  {plain_summary}
   <h2>Metadata</h2>
   <table>{metadata_rows}</table>
   {section_blocks}

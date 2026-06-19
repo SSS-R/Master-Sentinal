@@ -48,6 +48,7 @@ class FullScanDiagnostic:
             cmd,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_sec,
             creationflags=self._creation_flags(),
         )

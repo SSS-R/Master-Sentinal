@@ -90,6 +90,52 @@ def test_collect_formats_dashboard_summary_for_healthy_devices():
     assert snapshot.disk_partitions[0].mountpoint == "C:\\"
 
 
+def test_collect_fast_builds_summary_without_deep_data():
+    collector = LiveSnapshotCollector(
+        cpu_mod=StubCPU(),
+        ram_mod=StubRAM(),
+        gpu_mod=StubGPU([{"Name": "RTX", "DeviceID": "gpu-1"}]),
+        disk_mod=StubDisk([{"Device": "C:", "Mountpoint": "C:\\"}], {"disk0": "OK"}),
+    )
+
+    fast = collector.collect_fast()
+
+    assert fast.summary.cpu_usage_text == "42.0%"
+    assert fast.summary.gpu_status_text == "1 GPU"
+    assert fast.per_core == [10.0, 20.0]
+
+
+def test_assemble_with_empty_deep_skips_deep_findings():
+    collector = LiveSnapshotCollector(
+        cpu_mod=StubCPU(),
+        ram_mod=StubRAM(),
+        gpu_mod=StubGPU([{"Name": "RTX", "DeviceID": "gpu-1"}]),
+        disk_mod=StubDisk([{"Device": "C:", "Mountpoint": "C:\\"}], {"disk0": "OK"}),
+    )
+
+    fast = collector.collect_fast()
+    snapshot = collector.assemble(fast, collector.empty_deep())
+
+    # Before the first deep collect, only fast (gpu/disk) data drives findings.
+    assert snapshot.diagnostic_report.has_issues is False
+    assert snapshot.health_summary.overall_status == "ok"
+    assert snapshot.smart_drives == []
+
+
+def test_collect_deep_reports_collected_flag():
+    collector = LiveSnapshotCollector(
+        cpu_mod=StubCPU(),
+        ram_mod=StubRAM(),
+        gpu_mod=StubGPU([{"Name": "RTX", "DeviceID": "gpu-1"}]),
+        disk_mod=StubDisk([{"Device": "C:", "Mountpoint": "C:\\"}], {"disk0": "OK"}),
+    )
+
+    deep = collector.collect_deep()
+
+    assert deep.collected is True
+    assert len(deep.smart_drives) == 1
+
+
 def test_collect_marks_device_summary_unavailable_on_errors():
     collector = LiveSnapshotCollector(
         cpu_mod=StubCPU(),

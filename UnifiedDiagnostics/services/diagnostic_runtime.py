@@ -2,7 +2,44 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+
+
+def _creation_flags() -> int:
+    """Return flags that hide the console window on Windows."""
+    if os.name == "nt":
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
+def run_powershell(script: str, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Run a PowerShell script and capture UTF-8 output reliably.
+
+    Forces UTF-8 on both ends: PowerShell is told to emit UTF-8 and Python
+    decodes as UTF-8 with replacement. Without this, output containing
+    non-ASCII text (device names, service display names, localized event
+    messages) is decoded with the machine's ANSI codepage and can corrupt or
+    raise ``UnicodeDecodeError`` — a failure that only shows up on other
+    machines (different locale), never on the developer's English install.
+    """
+    full_script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" + script
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            full_script,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        creationflags=_creation_flags(),
+    )
 
 
 def friendly_exception_message(exc: Exception, action: str) -> str:

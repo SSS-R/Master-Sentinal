@@ -6,7 +6,6 @@ import dataclasses
 import json
 import os
 import platform
-import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +15,8 @@ from modules.cpu_diag import CPUDiagnostic
 from modules.disk_diag import DiskDiagnostic
 from modules.ram_diag import RAMDiagnostic
 from services.app_logging import get_logger
+from services.diagnostic_runtime import run_powershell
+from services.redaction import redact_obj, redact_text
 
 LOGGER = get_logger(__name__)
 
@@ -93,13 +94,7 @@ class IssueBundleExporter:
             Where-Object {$_.DisplayName -ne $null} |
             Select-Object -First 50 DisplayName
             """
-            result = subprocess.run(
-                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = run_powershell(ps_cmd, timeout=30)
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     if ":" in line:
@@ -124,13 +119,7 @@ class IssueBundleExporter:
                 }
             } | ConvertTo-Json -Array
             """
-            result = subprocess.run(
-                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = run_powershell(ps_cmd, timeout=30)
             if result.returncode == 0 and result.stdout.strip():
                 updates = json.loads(result.stdout)
         except Exception as e:
@@ -159,13 +148,7 @@ class IssueBundleExporter:
             Select-Object -Property TimeCreated,ProviderName,Message,Id |
             ConvertTo-Json -Compress
             """
-            result = subprocess.run(
-                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = run_powershell(ps_cmd, timeout=30)
             if result.returncode == 0 and result.stdout.strip():
                 logs["recent_system_errors.json"] = result.stdout
         except Exception:
@@ -173,12 +156,15 @@ class IssueBundleExporter:
 
         return logs
 
-    def export_bundle(self, output_path: str) -> bool:
+    def export_bundle(self, output_path: str, anonymize: bool = False) -> bool:
         """
         Export complete issue bundle as a zip file.
 
         Args:
             output_path: Path for the output zip file
+            anonymize: When True, scrub the Windows username, PC name, and
+                hardware serial numbers from every file in the bundle so it is
+                safe to share publicly.
 
         Returns:
             True if export succeeded
@@ -194,16 +180,23 @@ class IssueBundleExporter:
 
             # Collect system info
             system_info = self.collect_system_info()
+            diagnostic_data = self.diagnostic_data
+            logs = self.collect_logs()
+
+            if anonymize:
+                system_info = redact_obj(system_info)
+                diagnostic_data = redact_obj(diagnostic_data) if diagnostic_data else diagnostic_data
+                logs = {name: redact_text(content) for name, content in logs.items()}
+
             with open(bundle_dir / "system_info.json", "w", encoding="utf-8") as f:
                 json.dump(system_info, f, indent=2, default=str)
 
             # Collect diagnostic data if available
-            if self.diagnostic_data:
+            if diagnostic_data:
                 with open(bundle_dir / "diagnostics.json", "w", encoding="utf-8") as f:
-                    json.dump(self.diagnostic_data, f, indent=2, default=str)
+                    json.dump(diagnostic_data, f, indent=2, default=str)
 
             # Collect logs
-            logs = self.collect_logs()
             logs_dir = bundle_dir / "logs"
             logs_dir.mkdir(exist_ok=True)
             for log_name, log_content in logs.items():
@@ -212,7 +205,7 @@ class IssueBundleExporter:
                     f.write(log_content)
 
             # Create README with context
-            readme = self._generate_readme(system_info)
+            readme = self._generate_readme(system_info, anonymize)
             with open(bundle_dir / "README.txt", "w", encoding="utf-8") as f:
                 f.write(readme)
 
@@ -239,8 +232,32 @@ class IssueBundleExporter:
             LOGGER.exception(f"Failed to export issue bundle: {e}")
             return False
 
-    def _generate_readme(self, system_info: dict[str, Any]) -> str:
+    def _generate_readme(self, system_info: dict[str, Any], anonymized: bool = False) -> str:
         """Generate README with bundle context."""
+        if anonymized:
+            privacy_section = (
+                "PRIVACY\n"
+                "-------\n"
+                "This bundle was exported with ANONYMIZE ENABLED. The Windows username,\n"
+                "PC name, and hardware serial numbers were replaced with placeholders\n"
+                "([USER], [HOST], [REDACTED]) across all files. It is intended to be safe\n"
+                "to share publicly, but please still skim the files before posting.\n"
+            )
+        else:
+            privacy_section = (
+                "PRIVACY - PLEASE READ BEFORE SHARING\n"
+                "------------------------------------\n"
+                "This bundle was exported WITHOUT anonymization and may contain:\n"
+                "- Your Windows username (inside file paths)\n"
+                "- Your PC name (hostname)\n"
+                "- Hardware serial numbers\n"
+                "- System event-log messages that can include user names and paths\n"
+                "- A list of installed software\n\n"
+                "Review the files before sharing publicly. To produce a scrubbed copy,\n"
+                "re-export with the 'Anonymize' option enabled. The bundle does NOT\n"
+                "intentionally collect personal files, passwords, or documents.\n"
+            )
+
         return f"""MASTER SENTINAL - DIAGNOSTIC BUNDLE
 ===================================
 
@@ -259,16 +276,7 @@ CONTENTS
 - logs/: Application and system logs
 - README.txt: This file
 
-SHARING THIS BUNDLE
--------------------
-This bundle contains system information that may include:
-- Hardware configuration
-- Installed software list
-- System event logs
-
-Review the contents before sharing publicly. The bundle does NOT intentionally
-collect personal files, passwords, or sensitive documents.
-
+{privacy_section}
 For support, share this bundle via:
 - GitHub Issues: https://github.com/SSS-R/Master-Sentinal/issues
 - Community forums

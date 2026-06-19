@@ -50,24 +50,24 @@ class ScanPresetService:
             ScanPreset.QUICK: ScanPresetConfig(
                 name="quick",
                 display_name="Quick Scan",
-                description="Essential checks for common issues (2 min)",
-                estimated_duration_seconds=120,
+                description="Essential checks for common issues (about 5-10 min; times vary by PC)",
+                estimated_duration_seconds=420,
                 includes_repair=False,
                 requires_reboot=False,
             ),
             ScanPreset.STANDARD: ScanPresetConfig(
                 name="standard",
                 display_name="Standard Scan",
-                description="Full routine health check (10 min)",
-                estimated_duration_seconds=600,
+                description="Full routine health check (about 15-25 min; times vary by PC)",
+                estimated_duration_seconds=1200,
                 includes_repair=True,
                 requires_reboot=False,
             ),
             ScanPreset.DEEP: ScanPresetConfig(
                 name="deep",
                 display_name="Deep Scan",
-                description="Comprehensive diagnostics including advanced tools (30 min)",
-                estimated_duration_seconds=1800,
+                description="Comprehensive diagnostics plus advanced tools (30+ min; may require a restart)",
+                estimated_duration_seconds=2400,
                 includes_repair=True,
                 requires_reboot=True,  # May trigger memory test
             ),
@@ -81,16 +81,16 @@ class ScanPresetService:
         """Get tasks for quick scan."""
         return [
             ScanTask(
-                name="System File Check (Quick)",
+                name="System File Check",
                 runner=self.full_scan.run_sfc,
                 category="System Repair",
-                estimated_seconds=60,
+                estimated_seconds=360,
             ),
             ScanTask(
                 name="Power Efficiency Check",
                 runner=self.full_scan.run_power_diag,
                 category="Power",
-                estimated_seconds=30,
+                estimated_seconds=45,
             ),
         ]
 
@@ -101,19 +101,19 @@ class ScanPresetService:
                 name="System File Checker",
                 runner=self.full_scan.run_sfc,
                 category="System Repair",
-                estimated_seconds=180,
+                estimated_seconds=360,
             ),
             ScanTask(
                 name="DISM Image Repair",
                 runner=self.full_scan.run_dism,
                 category="System Repair",
-                estimated_seconds=180,
+                estimated_seconds=300,
             ),
             ScanTask(
                 name="Disk Check (Scan)",
                 runner=self.full_scan.run_chkdsk_scan,
                 category="Storage",
-                estimated_seconds=120,
+                estimated_seconds=180,
             ),
             ScanTask(
                 name="Power Efficiency Diagnostics",

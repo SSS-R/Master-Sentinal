@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import platform
 import threading
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -17,6 +17,9 @@ from config import (
     APPEARANCE_MODE,
     APP_VERSION,
     COLOR_THEME,
+    DEEP_REFRESH_INTERVAL_SEC,
+    DONATE_URL,
+    REPO_URL,
     TEMP_ALERT_THRESHOLD_C,
     UPDATE_INTERVAL_SEC,
     WINDOW_GEOMETRY,
@@ -29,8 +32,6 @@ from modules.disk_diag import DiskDiagnostic
 from modules.full_scan import FullScanDiagnostic
 from modules.gpu_diag import GPUDiagnostic
 from modules.ram_diag import RAMDiagnostic
-from modules.driver_diag import DriverDiagnostic
-from modules.event_log_diag import EventLogDiagnostic
 from services.full_scan_service import FullScanService, ScanTask
 from services.app_logging import get_logger
 from services.error_explanations import explain_error_message
@@ -44,7 +45,7 @@ from services.live_snapshot import (
 )
 from services.report_exporter import write_csv_report, write_html_report, write_json_report
 from services.snapshot_history import SnapshotHistory
-from services.monitoring_alerts import MonitoringAlerts, AlertConfig, AlertSeverity
+from services.monitoring_alerts import MonitoringAlerts, AlertSeverity
 from services.scan_presets import ScanPresetService, ScanPreset
 from services.issue_bundle import IssueBundleExporter
 from ui.components import InfoRow, MetricCard, SectionFrame
@@ -81,8 +82,8 @@ class App(ctk.CTk):
         self.nav_frame.grid(row=0, column=0, sticky="nsew")
 
         self.logo_label = ctk.CTkLabel(
-            self.nav_frame, text="SYS DIAG",
-            font=ctk.CTkFont(size=20, weight="bold"),
+            self.nav_frame, text="Master Sentinal",
+            font=ctk.CTkFont(size=18, weight="bold"),
         )
         self.logo_label.pack(padx=20, pady=20)
 
@@ -117,8 +118,6 @@ class App(ctk.CTk):
         self.disk_mod = DiskDiagnostic()
         self.board_mod = BoardDiagnostic()
         self.full_scan_mod = FullScanDiagnostic()
-        self.driver_mod = DriverDiagnostic()
-        self.event_log_mod = EventLogDiagnostic()
         self.snapshot_collector = LiveSnapshotCollector(
             cpu_mod=self.cpu_mod,
             ram_mod=self.ram_mod,
@@ -141,6 +140,14 @@ class App(ctk.CTk):
         self._active_scan_started_at = 0.0
         self._background_threads: list[threading.Thread] = []
         self._refresh_in_progress: dict[str, bool] = {}
+        # Cache of the expensive PowerShell/WMI diagnostics. Starts empty and is
+        # filled by the deep-collect loop; the fast loop reuses it every tick so
+        # the live UI never blocks on PowerShell.
+        self._deep_cache = self.snapshot_collector.empty_deep()
+        # Latest GPU devices from the fast loop, read by the temperature alert
+        # monitor. Initialized empty so the alert thread can read it safely
+        # before the first snapshot lands.
+        self._last_gpu_devices: list[GPUDevice] = []
 
         # Dashboard string vars
         self.cpu_usage_var = ctk.StringVar(value="0%")
@@ -167,12 +174,16 @@ class App(ctk.CTk):
 
         self.select_frame_by_name("Dashboard")
 
-        # Monitoring thread (uses Event for clean shutdown)
+        # Monitoring threads (use Event for clean shutdown).
+        # Fast loop: cheap psutil metrics every UPDATE_INTERVAL_SEC.
+        # Deep loop: expensive PowerShell/WMI diagnostics on a slow cadence.
         self._stop_event = threading.Event()
         self.monitor_thread = self._start_background_thread(self._monitor_loop)
+        self.deep_monitor_thread = self._start_background_thread(self._deep_monitor_loop)
 
-        # Start monitoring alerts
+        # Start monitoring alerts (GPU temperature fed from the live snapshot)
         self.monitoring_alerts.add_alert_callback(self._on_monitoring_alert)
+        self.monitoring_alerts.set_temperature_provider(self._current_gpu_temperatures)
         self.monitoring_alerts.start_monitoring()
 
         # Toast container (overlay for notifications)
@@ -252,10 +263,9 @@ class App(ctk.CTk):
 
         # Export Report button
         export_btn = ctk.CTkButton(
-            df, text="📄 Export Report (CSV)", font=("Roboto", 14), height=36,
+            df, text="Export Report (CSV, HTML, or JSON)", font=("Roboto", 14), height=36,
             command=self._export_report,
         )
-        export_btn.configure(text="Export Report (CSV, HTML, or JSON)")
         export_btn.pack(fill="x", padx=20, pady=(0, 10))
 
         # Export Issue Bundle button
@@ -504,6 +514,50 @@ class App(ctk.CTk):
         for k, v in self._last_board_info.as_rows().items():
             self.sys_info_frame.add_row(k, str(v))
 
+        # About & Support
+        about_frame = SectionFrame(sf, "About & Support")
+        about_frame.pack(fill="x", padx=20, pady=10)
+
+        about_frame.add_row("Application", WINDOW_TITLE)
+        about_frame.add_row("Version", APP_VERSION)
+        about_frame.add_row("License", "MIT (free and open source)")
+
+        support_note = ctk.CTkLabel(
+            about_frame.content,
+            text=(
+                "Master Sentinal is free and open source. If it helped you, a star on "
+                "GitHub or an optional donation keeps it going — but it will always be free."
+            ),
+            text_color="gray70",
+            anchor="w",
+            justify="left",
+            wraplength=900,
+        )
+        support_note.pack(fill="x", pady=(8, 8))
+
+        button_row = ctk.CTkFrame(about_frame.content, fg_color="transparent")
+        button_row.pack(fill="x", pady=(0, 4))
+
+        github_btn = ctk.CTkButton(
+            button_row, text="View on GitHub", height=36,
+            command=lambda: self._open_url(REPO_URL),
+        )
+        github_btn.pack(side="left", padx=(0, 10))
+
+        donate_btn = ctk.CTkButton(
+            button_row, text="Support / Donate (optional)", height=36,
+            fg_color="#2e8b57", hover_color="#256e46",
+            command=lambda: self._open_url(DONATE_URL),
+        )
+        donate_btn.pack(side="left")
+
+    def _open_url(self, url: str) -> None:
+        """Open an external URL in the user's default browser."""
+        try:
+            webbrowser.open(url, new=2)
+        except Exception as e:
+            LOGGER.warning("Failed to open URL %s: %s", url, e)
+
     def setup_full_scan_ui(self) -> None:
         """Build the Full Scan results table and Start button."""
         ff = self.frames[NAV_SCAN_ITEM]
@@ -695,6 +749,32 @@ class App(ctk.CTk):
         preset = preset_map.get(preset_name, ScanPreset.STANDARD)
         tasks = self.scan_preset_service.get_tasks_for_preset(preset)
 
+        # Safety gate: batch presets (e.g. Deep Scan) can include advanced tools
+        # that change system state or require a restart (Driver Verifier, Memory
+        # Diagnostic). The single-tool path confirms these individually, so the
+        # batch path must too — otherwise picking Deep Scan would silently launch
+        # them. Confirm once, up front, listing exactly what will run.
+        risky_tasks = [
+            task for task in tasks
+            if getattr(task, "caution", "") or getattr(task, "requires_reboot", False)
+        ]
+        if risky_tasks:
+            detail_lines = []
+            for task in risky_tasks:
+                note = getattr(task, "caution", "") or ""
+                if getattr(task, "requires_reboot", False):
+                    note = f"{note} This requires a restart.".strip()
+                detail_lines.append(f"• {task.name}: {note}".strip())
+            details = "\n\n".join(detail_lines)
+            approved = messagebox.askyesno(
+                "Confirm Advanced Tools",
+                f"{preset_name} includes advanced tools that can change system state "
+                f"or require a restart:\n\n{details}\n\nDo you want to continue?",
+            )
+            if not approved:
+                self.scan_progress_var.set("Scan cancelled")
+                return
+
         self.start_scan_btn.configure(state="disabled", text="Scanning...")
         self.scan_logs = []
         self.last_scan_started_at = datetime.now(timezone.utc)
@@ -847,19 +927,17 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _monitor_loop(self) -> None:
-        """Periodically poll diagnostics and schedule UI updates."""
-        snapshot_count = 0
+        """Poll cheap live metrics and schedule UI updates on the fast cadence.
+
+        Only psutil/nvidia-smi reads happen here, combined with the cached deep
+        snapshot, so this stays responsive regardless of how slow the machine's
+        PowerShell/WMI diagnostics are.
+        """
         while not self._stop_event.is_set():
             try:
-                snapshot = self.snapshot_collector.collect()
+                fast = self.snapshot_collector.collect_fast()
+                snapshot = self.snapshot_collector.assemble(fast, self._deep_cache)
                 self._safe_after(lambda current=snapshot: self._apply_snapshot(current))
-
-                # Save snapshot to history every 5 snapshots (every ~5 minutes)
-                snapshot_count += 1
-                if snapshot_count >= 5:
-                    snapshot_count = 0
-                    self._save_snapshot_to_history(snapshot)
-
             except Exception as e:
                 LOGGER.exception("Live monitor loop failed: %s", e)
                 self._safe_after(
@@ -868,6 +946,29 @@ class App(ctk.CTk):
 
             # Use Event.wait instead of time.sleep for clean cancellation
             self._stop_event.wait(UPDATE_INTERVAL_SEC)
+
+    def _deep_monitor_loop(self) -> None:
+        """Collect the expensive PowerShell/WMI diagnostics on a slow cadence.
+
+        Runs once immediately at startup, then every DEEP_REFRESH_INTERVAL_SEC.
+        Results are cached for the fast loop and a fresh combined snapshot is
+        pushed so the dashboard health summary and SMART section update.
+        """
+        while not self._stop_event.is_set():
+            try:
+                deep = self.snapshot_collector.collect_deep()
+                if self._stop_event.is_set():
+                    break
+                self._deep_cache = deep
+                fast = self.snapshot_collector.collect_fast()
+                snapshot = self.snapshot_collector.assemble(fast, deep)
+                self._safe_after(lambda current=snapshot: self._apply_snapshot(current))
+                self._save_snapshot_to_history(snapshot)
+            except Exception as e:
+                LOGGER.exception("Deep monitor loop failed: %s", e)
+
+            # Wait for the slow interval (cancellable).
+            self._stop_event.wait(DEEP_REFRESH_INTERVAL_SEC)
 
     def _save_snapshot_to_history(self, snapshot) -> None:
         """Save a snapshot to history for trend tracking."""
@@ -1116,7 +1217,9 @@ class App(ctk.CTk):
                 self._safe_after(lambda: apply_callback(payload))
             except Exception as e:
                 LOGGER.exception("%s refresh failed: %s", error_context, e)
-                self._safe_after(lambda: self._set_empty_state(container, f"{error_context} refresh failed: {e}"))
+                self._safe_after(
+                    lambda err=e: self._set_empty_state(container, f"{error_context} refresh failed: {err}")
+                )
             finally:
                 def _reset_button() -> None:
                     self._refresh_in_progress[section_key] = False
@@ -1371,7 +1474,6 @@ class App(ctk.CTk):
         preset = preset_map.get(new_preset, ScanPreset.STANDARD)
         config = self.scan_preset_service.get_preset_config(preset)
         tasks = self.scan_preset_service.get_tasks_for_preset(preset)
-        total_time = self.scan_preset_service.get_total_estimated_time(tasks)
 
         desc = f"{config.description} - Includes: {', '.join(t.name for t in tasks[:3])}"
         if len(tasks) > 3:
@@ -1395,7 +1497,7 @@ class App(ctk.CTk):
                 self._safe_after(lambda: self._apply_trends_ui(trend_data, summary, metric))
             except Exception as e:
                 LOGGER.exception("Trends refresh failed: %s", e)
-                self._safe_after(lambda: self._set_empty_state(self.trend_container, f"Error: {e}"))
+                self._safe_after(lambda err=e: self._set_empty_state(self.trend_container, f"Error: {err}"))
 
         self._start_background_thread(_collect)
 
@@ -1464,7 +1566,8 @@ class App(ctk.CTk):
         change = trend_data.get("change", 0)
         change_text = f"{change:+.2f}" if change != 0 else "0"
 
-        trend_frame.add_row("Direction", f"{trend_icon} {trend_direction}")
+        direction_row = trend_frame.add_row("Direction", f"{trend_icon} {trend_direction}")
+        direction_row.value.configure(text_color=trend_color)
         trend_frame.add_row("Change (24h)", change_text)
 
         previous = trend_data.get("previous")
@@ -1493,7 +1596,7 @@ class App(ctk.CTk):
 
         # Empty state if no data
         if trend_data.get("current") is None and summary.get("total_snapshots", 0) == 0:
-            self._set_empty_state(self.trend_container, "No snapshot history yet. Snapshots are saved automatically every minute while the app runs.")
+            self._set_empty_state(self.trend_container, "No snapshot history yet. Snapshots are saved automatically every few minutes while the app runs.")
 
     def _apply_update_ui(self, health) -> None:
         """Apply update diagnostics to UI."""
@@ -1564,7 +1667,6 @@ class App(ctk.CTk):
             "os": platform.platform(),
             "machine": platform.machine(),
             "running_as_admin": self._is_running_as_admin(),
-            "workspace": os.getcwd(),
         }
         if self.last_scan_started_at:
             metadata["last_scan_started_at"] = self.last_scan_started_at.isoformat()
@@ -1680,30 +1782,56 @@ class App(ctk.CTk):
         if not path:
             return
 
-        try:
-            # Build diagnostic data from current state
-            diagnostic_data = self._build_report_payload()
+        # Offer to scrub personal data. Default to anonymized for safe sharing.
+        anonymize = messagebox.askyesno(
+            "Anonymize bundle?",
+            "Remove personal data from this bundle before saving?\n\n"
+            "This replaces your Windows username, PC name, and hardware serial "
+            "numbers with placeholders. Recommended if you plan to share it "
+            "publicly (for example, on GitHub).",
+        )
 
-            # Create exporter with current data
-            exporter = IssueBundleExporter(diagnostic_data=diagnostic_data)
+        # Build the report payload on the UI thread (reads widget state), then do
+        # the slow collection + zip on a background thread so the UI stays live.
+        diagnostic_data = self._build_report_payload()
 
-            # Show progress message
-            self._safe_after(lambda: messagebox.showinfo(
-                "Exporting...",
-                "Collecting system information and logs. This may take a minute.",
-            ))
+        def _work() -> None:
+            try:
+                exporter = IssueBundleExporter(diagnostic_data=diagnostic_data)
+                success = exporter.export_bundle(path, anonymize=anonymize)
+                if success:
+                    self._safe_after(
+                        lambda: messagebox.showinfo("Export Complete", f"Diagnostic bundle saved to:\n{path}")
+                    )
+                else:
+                    self._safe_after(
+                        lambda: messagebox.showerror(
+                            "Export Failed",
+                            "Failed to create diagnostic bundle. Check logs for details.",
+                        )
+                    )
+            except Exception as e:
+                LOGGER.exception("Issue bundle export failed: %s", e)
+                self._safe_after(lambda err=e: messagebox.showerror("Export Failed", str(err)))
 
-            # Export bundle
-            success = exporter.export_bundle(path)
+        self.scan_progress_var.set("Exporting diagnostic bundle...")
+        self._start_background_thread(_work)
 
-            if success:
-                messagebox.showinfo("Export Complete", f"Diagnostic bundle saved to:\n{path}")
-            else:
-                messagebox.showerror("Export Failed", "Failed to create diagnostic bundle. Check logs for details.")
+    def _current_gpu_temperatures(self) -> list[tuple[str, float]]:
+        """Return current GPU ``(label, °C)`` readings for the alert monitor.
 
-        except Exception as e:
-            LOGGER.exception("Issue bundle export failed: %s", e)
-            messagebox.showerror("Export Failed", str(e))
+        Reads the latest GPU devices captured by the fast loop. GPU temperature
+        comes from nvidia-smi today; CPU/fan/voltage sensors are deferred until
+        a signed build can ship the sensor driver without antivirus flags.
+        """
+        readings: list[tuple[str, float]] = []
+        for gpu in self._last_gpu_devices or []:
+            if getattr(gpu, "is_error", False):
+                continue
+            temp = gpu.temperature_c
+            if temp is not None:
+                readings.append((gpu.name or "GPU", temp))
+        return readings
 
     def _on_monitoring_alert(self, alert) -> None:
         """Handle monitoring alert by showing a toast notification."""

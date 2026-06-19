@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import os
 import socket
-import subprocess
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable
 
 from models.diagnostic_models import (
     BitLockerVolumeStatus,
@@ -36,7 +36,7 @@ from models.diagnostic_models import (
 )
 from models.health_models import HealthSummary
 from services.app_logging import get_logger
-from services.diagnostic_runtime import friendly_exception_message
+from services.diagnostic_runtime import friendly_exception_message, run_powershell
 from services.health_analyzer import HealthAnalyzer
 
 if TYPE_CHECKING:
@@ -82,26 +82,51 @@ class DiagnosticSnapshot:
     health_summary: HealthSummary
 
 
+@dataclass(frozen=True)
+class FastSnapshot:
+    """Cheap, high-frequency metrics collected via psutil/nvidia-smi.
+
+    Safe to poll on the live (2-second) cadence — no PowerShell or repeated
+    WMI connections involved.
+    """
+
+    cpu_load: float
+    per_core: list[float]
+    memory_stats: MemoryStats
+    gpu_devices: list[GPUDevice]
+    disk_partitions: list[DiskPartition]
+    summary: SnapshotSummary
+
+
+@dataclass(frozen=True)
+class DeepSnapshot:
+    """Expensive, slow-changing diagnostics collected via PowerShell/WMI.
+
+    These spawn external processes and query Windows management data, so they
+    are collected once at startup and then only on a slow timer or manual
+    refresh — never on the live loop. ``collected`` is ``False`` for the
+    placeholder used before the first real collection completes.
+    """
+
+    smart_drives: list[SmartDriveStatus] = field(default_factory=list)
+    windows_update_health: WindowsUpdateHealth = field(default_factory=WindowsUpdateHealth)
+    event_log_summary: EventLogSummary = field(default_factory=EventLogSummary)
+    reliability_summary: ReliabilitySummary = field(default_factory=ReliabilitySummary)
+    network_health: NetworkHealth = field(default_factory=NetworkHealth)
+    storage_health: StorageHealth = field(default_factory=StorageHealth)
+    security_health: SecurityHealth = field(default_factory=SecurityHealth)
+    startup_health: StartupHealth = field(default_factory=StartupHealth)
+    system_form_factor: SystemFormFactor = field(default_factory=SystemFormFactor)
+    collected: bool = False
+
+
 class WindowsUpdateDiagnostic:
     """Collects Windows Update service state and pending-reboot signals."""
 
     def get_windows_update_health(self) -> WindowsUpdateHealth:
         """Return structured Windows Update health information."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(), timeout=15)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -124,12 +149,6 @@ class WindowsUpdateDiagnostic:
         except Exception as e:
             LOGGER.warning("Windows Update diagnostics failed: %s", e)
             return WindowsUpdateHealth(error_message=friendly_exception_message(e, "Windows Update diagnostics"))
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -180,20 +199,7 @@ class EventLogDiagnostic:
     def get_event_log_summary(self, lookback_days: int = 7, max_events: int = 20) -> EventLogSummary:
         """Return a summary of recent Event Viewer critical/error entries."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(lookback_days, max_events),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(lookback_days, max_events), timeout=20)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -225,12 +231,6 @@ class EventLogDiagnostic:
                 lookback_days=lookback_days,
                 error_message=friendly_exception_message(e, "Event Viewer diagnostics"),
             )
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -271,20 +271,7 @@ class ReliabilityMonitorDiagnostic:
     def get_reliability_summary(self, lookback_days: int = 7, max_records: int = 20) -> ReliabilitySummary:
         """Return a summary of recent crash/hang reliability records."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(lookback_days, max_records),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=25,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(lookback_days, max_records), timeout=25)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -315,12 +302,6 @@ class ReliabilityMonitorDiagnostic:
                 lookback_days=lookback_days,
                 error_message=friendly_exception_message(e, "Reliability diagnostics"),
             )
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -372,20 +353,7 @@ class NetworkDiagnostic:
     def get_network_health(self) -> NetworkHealth:
         """Return structured network health information."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(), timeout=15)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -412,12 +380,6 @@ class NetworkDiagnostic:
         except Exception as e:
             LOGGER.warning("Network diagnostics failed: %s", e)
             return NetworkHealth(error_message=friendly_exception_message(e, "Network diagnostics"))
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -467,20 +429,7 @@ class StorageHealthDiagnostic:
     def get_storage_health(self) -> StorageHealth:
         """Return structured physical drive health information."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(), timeout=20)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -505,12 +454,6 @@ class StorageHealthDiagnostic:
         except Exception as e:
             LOGGER.warning("Storage health diagnostics failed: %s", e)
             return StorageHealth(error_message=friendly_exception_message(e, "Storage diagnostics"))
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -558,20 +501,7 @@ class SecurityDiagnostic:
     def get_security_health(self) -> SecurityHealth:
         """Return structured Windows security health information."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(), timeout=20)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -613,12 +543,6 @@ class SecurityDiagnostic:
         except Exception as e:
             LOGGER.warning("Security diagnostics failed: %s", e)
             return SecurityHealth(error_message=friendly_exception_message(e, "Security diagnostics"))
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -719,20 +643,7 @@ class StartupServiceDiagnostic:
     def get_startup_health(self) -> StartupHealth:
         """Return structured startup and background-service health information."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=25,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(), timeout=25)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -781,12 +692,6 @@ class StartupServiceDiagnostic:
         except Exception as e:
             LOGGER.warning("Startup diagnostics failed: %s", e)
             return StartupHealth(error_message=friendly_exception_message(e, "Startup diagnostics"))
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -883,20 +788,7 @@ class SystemFormFactorDiagnostic:
     def get_system_form_factor(self) -> SystemFormFactor:
         """Return structured form-factor context."""
         try:
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    self._powershell_script(),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=self._creation_flags(),
-            )
+            result = run_powershell(self._powershell_script(), timeout=10)
             output = (result.stdout or "").strip()
             if result.returncode != 0:
                 error = (result.stderr or output or "PowerShell returned a non-zero exit code.").strip()
@@ -916,12 +808,6 @@ class SystemFormFactorDiagnostic:
         except Exception as e:
             LOGGER.warning("System form-factor diagnostics failed: %s", e)
             return SystemFormFactor(error_message=friendly_exception_message(e, "System form-factor diagnostics"))
-
-    @staticmethod
-    def _creation_flags() -> int:
-        if os.name == "nt":
-            return subprocess.CREATE_NO_WINDOW
-        return 0
 
     @staticmethod
     def _bool_or_none(value: Any) -> bool | None:
@@ -1024,112 +910,176 @@ class LiveSnapshotCollector:
         self.system_form_factor_mod = system_form_factor_mod
         self.health_analyzer = health_analyzer or HealthAnalyzer()
 
-    def collect(self) -> DiagnosticSnapshot:
-        """Gather a full live snapshot from the diagnostics modules."""
+    @staticmethod
+    def empty_deep() -> DeepSnapshot:
+        """Return a placeholder deep snapshot used before the first real collect."""
+        return DeepSnapshot()
+
+    def collect_fast(self) -> FastSnapshot:
+        """Collect cheap, high-frequency metrics (psutil/nvidia-smi only).
+
+        This is safe to call on the live 2-second loop: it never spawns the
+        eight PowerShell diagnostics or rebuilds heavy WMI service queries.
+        """
         cpu_load = self.cpu_mod.get_cpu_usage()
         per_core = self.cpu_mod.get_per_core_usage()
         memory_stats = self.ram_mod.get_ram_stats()
         gpu_devices = self.gpu_mod.get_gpu_devices()
         disk_partitions = self.disk_mod.get_disk_partitions()
-        smart_drives = self.disk_mod.get_smart_drive_statuses()
-        windows_update_health = (
-            self.windows_update_mod.get_windows_update_health()
-            if self.windows_update_mod is not None
-            else WindowsUpdateHealth()
-        )
-        event_log_summary = (
-            self.event_log_mod.get_event_log_summary()
-            if self.event_log_mod is not None
-            else EventLogSummary()
-        )
-        reliability_summary = (
-            self.reliability_mod.get_reliability_summary()
-            if self.reliability_mod is not None
-            else ReliabilitySummary()
-        )
-        network_health = (
-            self.network_mod.get_network_health()
-            if self.network_mod is not None
-            else NetworkHealth()
-        )
-        storage_health = (
-            self.storage_health_mod.get_storage_health()
-            if self.storage_health_mod is not None
-            else StorageHealth()
-        )
-        security_health = (
-            self.security_mod.get_security_health()
-            if self.security_mod is not None
-            else SecurityHealth()
-        )
-        startup_health = (
-            self.startup_mod.get_startup_health()
-            if self.startup_mod is not None
-            else StartupHealth()
-        )
-        system_form_factor = (
-            self.system_form_factor_mod.get_system_form_factor()
-            if self.system_form_factor_mod is not None
-            else SystemFormFactor()
-        )
-        diagnostic_report = self._build_diagnostic_report(
-            gpu_devices,
-            disk_partitions,
-            smart_drives,
-            windows_update_health,
-            event_log_summary,
-            reliability_summary,
-            network_health,
-            storage_health,
-            security_health,
-            startup_health,
-            system_form_factor,
-        )
-        health_summary = self.health_analyzer.analyze(
-            cpu_load,
-            memory_stats,
-            gpu_devices,
-            disk_partitions,
-            smart_drives,
-            windows_update_health if self.windows_update_mod is not None else None,
-            event_log_summary if self.event_log_mod is not None else None,
-            reliability_summary if self.reliability_mod is not None else None,
-            network_health if self.network_mod is not None else None,
-            storage_health if self.storage_health_mod is not None else None,
-            security_health if self.security_mod is not None else None,
-            startup_health if self.startup_mod is not None else None,
-            system_form_factor if self.system_form_factor_mod is not None else None,
-        )
 
-        return DiagnosticSnapshot(
+        summary = SnapshotSummary(
+            cpu_usage_text=f"{cpu_load}%",
+            ram_usage_text=f"{memory_stats.percent_used}%",
+            gpu_status_text=self._format_collection_status(gpu_devices, "GPU", "GPUs", "No GPUs Found"),
+            disk_status_text=self._format_collection_status(
+                disk_partitions,
+                "Partition",
+                "Partitions",
+                "No Partitions Found",
+            ),
+        )
+        return FastSnapshot(
             cpu_load=cpu_load,
             per_core=per_core,
             memory_stats=memory_stats,
             gpu_devices=gpu_devices,
             disk_partitions=disk_partitions,
-            smart_drives=smart_drives,
-            windows_update_health=windows_update_health,
-            event_log_summary=event_log_summary,
-            reliability_summary=reliability_summary,
-            network_health=network_health,
-            storage_health=storage_health,
-            security_health=security_health,
-            startup_health=startup_health,
-            system_form_factor=system_form_factor,
-            diagnostic_report=diagnostic_report,
-            summary=SnapshotSummary(
-                cpu_usage_text=f"{cpu_load}%",
-                ram_usage_text=f"{memory_stats.percent_used}%",
-                gpu_status_text=self._format_collection_status(gpu_devices, "GPU", "GPUs", "No GPUs Found"),
-                disk_status_text=self._format_collection_status(
-                    disk_partitions,
-                    "Partition",
-                    "Partitions",
-                    "No Partitions Found",
-                ),
+            summary=summary,
+        )
+
+    def collect_deep(self) -> DeepSnapshot:
+        """Collect the expensive PowerShell/WMI diagnostics concurrently.
+
+        Each diagnostic spawns an independent process or WMI query, so running
+        them in a thread pool turns the wall time from the sum of all calls into
+        roughly the slowest single call. Per-collector failures are isolated so
+        one slow or missing component cannot sink the rest.
+        """
+        jobs: dict[str, tuple[Callable[[], Any] | None, Any]] = {
+            "smart_drives": (self.disk_mod.get_smart_drive_statuses, []),
+            "windows_update_health": (
+                self.windows_update_mod.get_windows_update_health if self.windows_update_mod else None,
+                WindowsUpdateHealth(),
             ),
+            "event_log_summary": (
+                self.event_log_mod.get_event_log_summary if self.event_log_mod else None,
+                EventLogSummary(),
+            ),
+            "reliability_summary": (
+                self.reliability_mod.get_reliability_summary if self.reliability_mod else None,
+                ReliabilitySummary(),
+            ),
+            "network_health": (
+                self.network_mod.get_network_health if self.network_mod else None,
+                NetworkHealth(),
+            ),
+            "storage_health": (
+                self.storage_health_mod.get_storage_health if self.storage_health_mod else None,
+                StorageHealth(),
+            ),
+            "security_health": (
+                self.security_mod.get_security_health if self.security_mod else None,
+                SecurityHealth(),
+            ),
+            "startup_health": (
+                self.startup_mod.get_startup_health if self.startup_mod else None,
+                StartupHealth(),
+            ),
+            "system_form_factor": (
+                self.system_form_factor_mod.get_system_form_factor if self.system_form_factor_mod else None,
+                SystemFormFactor(),
+            ),
+        }
+
+        results: dict[str, Any] = {}
+        pending: dict[str, Callable[[], Any]] = {}
+        for key, (runner, default) in jobs.items():
+            if runner is None:
+                results[key] = default
+            else:
+                pending[key] = runner
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=len(pending)) as executor:
+                futures = {executor.submit(runner): key for key, runner in pending.items()}
+                for future, key in futures.items():
+                    try:
+                        results[key] = future.result()
+                    except Exception as exc:  # isolate per-collector failures
+                        LOGGER.warning("Deep diagnostic '%s' failed: %s", key, exc)
+                        results[key] = jobs[key][1]
+
+        return DeepSnapshot(collected=True, **results)
+
+    def assemble(self, fast: FastSnapshot, deep: DeepSnapshot) -> DiagnosticSnapshot:
+        """Combine a fast snapshot with the latest deep snapshot into a full result.
+
+        Deep models are only fed into the health analyzer and diagnostic report
+        once a real deep collection has completed (``deep.collected``) and the
+        owning module exists, preserving the previous None-gating behaviour.
+        """
+
+        def deep_or_none(value: Any, mod: Any) -> Any:
+            return value if (deep.collected and mod is not None) else None
+
+        diagnostic_report = self._build_diagnostic_report(
+            fast.gpu_devices,
+            fast.disk_partitions,
+            deep.smart_drives,
+            deep.windows_update_health,
+            deep.event_log_summary,
+            deep.reliability_summary,
+            deep.network_health,
+            deep.storage_health,
+            deep.security_health,
+            deep.startup_health,
+            deep.system_form_factor,
+            include_deep=deep.collected,
+        )
+        health_summary = self.health_analyzer.analyze(
+            fast.cpu_load,
+            fast.memory_stats,
+            fast.gpu_devices,
+            fast.disk_partitions,
+            deep.smart_drives,
+            deep_or_none(deep.windows_update_health, self.windows_update_mod),
+            deep_or_none(deep.event_log_summary, self.event_log_mod),
+            deep_or_none(deep.reliability_summary, self.reliability_mod),
+            deep_or_none(deep.network_health, self.network_mod),
+            deep_or_none(deep.storage_health, self.storage_health_mod),
+            deep_or_none(deep.security_health, self.security_mod),
+            deep_or_none(deep.startup_health, self.startup_mod),
+            deep_or_none(deep.system_form_factor, self.system_form_factor_mod),
+        )
+
+        return DiagnosticSnapshot(
+            cpu_load=fast.cpu_load,
+            per_core=fast.per_core,
+            memory_stats=fast.memory_stats,
+            gpu_devices=fast.gpu_devices,
+            disk_partitions=fast.disk_partitions,
+            smart_drives=deep.smart_drives,
+            windows_update_health=deep.windows_update_health,
+            event_log_summary=deep.event_log_summary,
+            reliability_summary=deep.reliability_summary,
+            network_health=deep.network_health,
+            storage_health=deep.storage_health,
+            security_health=deep.security_health,
+            startup_health=deep.startup_health,
+            system_form_factor=deep.system_form_factor,
+            diagnostic_report=diagnostic_report,
+            summary=fast.summary,
             health_summary=health_summary,
         )
+
+    def collect(self) -> DiagnosticSnapshot:
+        """Gather a full live snapshot (fast + deep) in one call.
+
+        Retained for tests, report generation, and any caller that wants a
+        complete one-shot snapshot. The live UI uses ``collect_fast`` and a
+        cached ``collect_deep`` instead.
+        """
+        return self.assemble(self.collect_fast(), self.collect_deep())
 
     @staticmethod
     def _build_diagnostic_report(
@@ -1144,6 +1094,7 @@ class LiveSnapshotCollector:
         security_health: SecurityHealth,
         startup_health: StartupHealth,
         system_form_factor: SystemFormFactor,
+        include_deep: bool = True,
     ) -> DiagnosticReport:
         issues: list[DiagnosticIssue] = []
 
@@ -1156,6 +1107,9 @@ class LiveSnapshotCollector:
         for smart_drive in smart_drives:
             if smart_drive.is_error:
                 issues.append(DiagnosticIssue(source="SMART", category="collection", message=smart_drive.error_message or "Unknown error"))
+
+        if not include_deep:
+            return DiagnosticReport(issues=issues)
 
         for source, model in (
             ("Windows Update", windows_update_health),

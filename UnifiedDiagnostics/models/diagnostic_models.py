@@ -573,6 +573,21 @@ class GPUDevice:
         """Return True when the GPU entry represents a collection error."""
         return self.error_message is not None
 
+    @property
+    def temperature_c(self) -> float | None:
+        """Return the GPU temperature in Celsius as a number, or None.
+
+        Parses the display text (e.g. ``"74 C"``) into a float so callers like
+        the monitoring alerts and snapshot history can compare it numerically.
+        """
+        if not self.temperature_text:
+            return None
+        cleaned = self.temperature_text.replace("°", "").replace("C", "").strip()
+        try:
+            return float(cleaned)
+        except (TypeError, ValueError):
+            return None
+
     def as_rows(self) -> dict[str, str]:
         """Return display-ready rows for the UI."""
         if self.error_message:
