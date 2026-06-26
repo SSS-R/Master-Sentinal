@@ -5,10 +5,12 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import tempfile
 from typing import Callable
 
 from services.app_logging import get_logger
 from services.diagnostic_runtime import friendly_exception_message
+from services.power_report import PowerSummary, summarize_energy_report
 
 
 LOGGER = get_logger(__name__)
@@ -23,6 +25,9 @@ class FullScanDiagnostic:
     CHKDSK_QUICK_TIMEOUT_SEC = 900
     POWERCFG_TIMEOUT_SEC = 180
     BATTERY_TIMEOUT_SEC = 120
+
+    #: Plain-language summary of the most recent power-efficiency check.
+    last_power_summary: PowerSummary | None = None
 
     def is_admin(self) -> bool:
         """Return True if the current process has administrator privileges."""
@@ -180,12 +185,18 @@ class FullScanDiagnostic:
             return False, friendly_exception_message(e, "Memory Diagnostic")
 
     def run_power_diag(self) -> tuple[bool, str]:
-        """Run Power Efficiency Diagnostics and return the report path."""
+        """Run Windows power-efficiency diagnostics and summarize them plainly.
+
+        The raw ``powercfg /energy`` HTML is written to a temp file rather than the
+        app folder: its red "Errors" are efficiency suggestions (not faults) and
+        showing the raw file to users is misleading. We parse it into a friendly
+        one-line summary that flows into the Master Sentinal scan report instead.
+        """
         if not self.is_admin():
             return False, "Administrator privileges required."
 
         try:
-            report_path = os.path.abspath("energy-report.html")
+            report_path = os.path.join(tempfile.gettempdir(), "ms_energy_report.html")
             cmd = ['powercfg', '/energy', '/output', report_path, '/duration', '15']
 
             if os.path.exists(report_path):
@@ -196,7 +207,9 @@ class FullScanDiagnostic:
 
             result = self._run_shell_command(cmd, self.POWERCFG_TIMEOUT_SEC)
             if result.returncode == 0:
-                return True, f"Report generated at {report_path}"
+                summary = summarize_energy_report(report_path)
+                self.last_power_summary = summary
+                return True, summary.friendly_text
             output = result.stdout + (result.stderr or "")
             return False, self._parse_friendly_error(output)
         except subprocess.TimeoutExpired as e:

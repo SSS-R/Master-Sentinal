@@ -5,6 +5,25 @@ All notable changes to Master Sentinal will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-26
+
+### Fixed
+- **Scans now produce a readable report, not a raw Windows file.** The Power
+  Efficiency check used to drop the user into Windows' raw `powercfg /energy`
+  HTML, where harmless, deliberate settings (High Performance power plan, USB
+  selective suspend, an app keeping the PC awake during the test) are styled as
+  red "Errors." That was misleading. The raw report is now parsed into a plain-
+  language summary that correctly frames those entries as power-saving
+  *suggestions*, not faults — and the raw file is written to a temp location
+  instead of the app folder so it is no longer mistaken for the app's own report.
+
+### Added
+- **Automatic scan report.** When a health scan finishes, Master Sentinal now
+  generates its own plain-language HTML report (health summary, findings, and
+  per-check results) under `Documents\Master Sentinal Reports\` and opens it
+  automatically. A **View Scan Report** button on the Full Scan screen reopens
+  the latest one.
+
 ## [1.1.0] - 2026-06-20
 
 ### Performance

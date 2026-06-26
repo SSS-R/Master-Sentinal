@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import threading
 import webbrowser
@@ -137,6 +138,7 @@ class App(ctk.CTk):
         self.scan_logs: list[dict[str, str]] = []
         self.last_scan_started_at: datetime | None = None
         self.last_scan_finished_at: datetime | None = None
+        self.last_scan_report_path: str | None = None
         self._active_scan_started_at = 0.0
         self._background_threads: list[threading.Thread] = []
         self._refresh_in_progress: dict[str, bool] = {}
@@ -624,6 +626,20 @@ class App(ctk.CTk):
         )
         self.scan_duration_label.pack(side="right")
 
+        # Appears after a scan finishes — opens the friendly Master Sentinal
+        # report (not Windows' raw, technical powercfg/battery files).
+        self.view_report_btn = ctk.CTkButton(
+            self.fs_container,
+            text="View Scan Report",
+            command=self._open_last_scan_report,
+            font=("Roboto", 14),
+            height=36,
+            fg_color="#2e8b57",
+            hover_color="#256f46",
+            state="disabled",
+        )
+        self.view_report_btn.pack(fill="x", pady=(0, 20))
+
         info_label = ctk.CTkLabel(
             self.fs_container,
             text="Routine health checks run together. Riskier tools are listed separately below.",
@@ -848,6 +864,10 @@ class App(ctk.CTk):
         self._safe_after(lambda: self.scan_progress_var.set(f"Finished {total} of {total} checks"))
         self._safe_after(lambda: self.scan_duration_var.set(f"Completed in {elapsed:.1f}s"))
         self._safe_after(lambda: trigger_button.configure(state="normal", text=idle_text))
+        # Turn the scan into a friendly, shareable Master Sentinal report and open
+        # it automatically, instead of leaving the user to hunt for Windows' raw
+        # technical files.
+        self._safe_after(self._generate_scan_report)
 
     def _run_single_task(self, task: ScanTask) -> None:
         """Execute one advanced task in a background thread."""
@@ -1742,6 +1762,44 @@ class App(ctk.CTk):
             return self.full_scan_mod.is_admin()
         except Exception:
             return False
+
+    @staticmethod
+    def _reports_dir() -> str:
+        """Return (and create) the folder where scan reports are saved."""
+        base = os.path.join(os.path.expanduser("~"), "Documents", "Master Sentinal Reports")
+        os.makedirs(base, exist_ok=True)
+        return base
+
+    def _generate_scan_report(self) -> None:
+        """Build a friendly HTML report after a scan and open it for the user.
+
+        Runs on the UI thread (it reads widget state). The raw Windows tool output
+        (powercfg/battery HTML) is intentionally *not* surfaced — this report is in
+        Master Sentinal's own plain-language format.
+        """
+        try:
+            payload = self._build_report_payload()
+            filename = f"Master_Sentinal_Scan_{datetime.now():%Y%m%d_%H%M%S}.html"
+            path = os.path.join(self._reports_dir(), filename)
+            write_html_report(path, payload)
+            self.last_scan_report_path = path
+            self.view_report_btn.configure(state="normal")
+            self.scan_progress_var.set("Scan complete - opening your report")
+            webbrowser.open(Path(path).as_uri(), new=2)
+        except Exception as e:
+            LOGGER.exception("Failed to generate scan report: %s", e)
+            self.scan_progress_var.set("Scan complete (report could not be generated)")
+
+    def _open_last_scan_report(self) -> None:
+        """Re-open the most recent scan report in the default browser."""
+        path = self.last_scan_report_path
+        if path and os.path.exists(path):
+            webbrowser.open(Path(path).as_uri(), new=2)
+        else:
+            messagebox.showinfo(
+                "No report yet",
+                "Run a health scan first — a report opens automatically when it finishes.",
+            )
 
     def _export_report(self) -> None:
         """Save current diagnostics snapshot to CSV, HTML, or JSON."""
