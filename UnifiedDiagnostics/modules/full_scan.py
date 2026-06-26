@@ -6,6 +6,7 @@ import ctypes
 import os
 import subprocess
 import tempfile
+import threading
 from typing import Callable
 
 from services.app_logging import get_logger
@@ -29,6 +30,12 @@ class FullScanDiagnostic:
     #: Plain-language summary of the most recent power-efficiency check.
     last_power_summary: PowerSummary | None = None
 
+    def __init__(self) -> None:
+        # Tracks the currently running Windows tool so a scan can be cancelled
+        # mid-check (otherwise SFC/DISM/CHKDSK would block for minutes).
+        self._current_proc: subprocess.Popen[str] | None = None
+        self._proc_lock = threading.Lock()
+
     def is_admin(self) -> bool:
         """Return True if the current process has administrator privileges."""
         try:
@@ -48,15 +55,59 @@ class FullScanDiagnostic:
         return 0
 
     def _run_shell_command(self, cmd: list[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
-        """Run a shell command with a timeout and hidden window."""
-        return subprocess.run(
+        """Run a shell command with a timeout and hidden window.
+
+        Uses ``Popen`` (not ``subprocess.run``) so the running tool is tracked
+        and can be terminated by :meth:`terminate_current` when the user stops a
+        scan. Behaviour otherwise matches ``subprocess.run``: it blocks until the
+        process finishes, raises ``TimeoutExpired`` on timeout, and returns a
+        ``CompletedProcess``.
+        """
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             errors="replace",
-            timeout=timeout_sec,
             creationflags=self._creation_flags(),
         )
+        with self._proc_lock:
+            self._current_proc = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        finally:
+            with self._proc_lock:
+                self._current_proc = None
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+    def terminate_current(self) -> None:
+        """Terminate the currently running scan tool and its child processes.
+
+        Safe to call from another thread (e.g. a Stop button handler). Windows
+        repair tools spawn helper processes, so we kill the whole tree via
+        ``taskkill /T``; if that fails we fall back to killing the process
+        directly. A no-op when nothing is running.
+        """
+        with self._proc_lock:
+            proc = self._current_proc
+        if proc is None:
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                creationflags=self._creation_flags(),
+            )
+        except Exception as e:
+            LOGGER.warning("taskkill failed for scan process %s: %s", proc.pid, e)
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     @staticmethod
     def _parse_friendly_error(output: str) -> str:
@@ -67,8 +118,12 @@ class FullScanDiagnostic:
             return "Error: Source Files Missing (Windows Update Issue)"
         if "0x800f0906" in out_lower:
             return "Error: Cannot Download Source Files"
+        if "cannot open volume for direct access" in out_lower:
+            return "Disk is locked by Windows. Close other apps, or schedule a restart-time check, then retry."
         if "access is denied" in out_lower or "error: 5" in out_lower:
-            return "Error: Access Denied (Run as Admin)"
+            # Reaching here while already elevated usually means the volume is
+            # locked by another process, not that admin rights are missing.
+            return "Access Denied. If already running as Administrator, the drive is in use - close other apps or retry after a restart."
         if "error: 87" in out_lower:
             return "Error: Invalid Parameter"
         if "error: 3017" in out_lower or "3017" in out_lower:

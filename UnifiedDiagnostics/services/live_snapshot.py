@@ -38,6 +38,7 @@ from models.health_models import HealthSummary
 from services.app_logging import get_logger
 from services.diagnostic_runtime import friendly_exception_message, run_powershell
 from services.health_analyzer import HealthAnalyzer
+from services.live_meters import NetworkRate, NetworkSpeedMeter
 
 if TYPE_CHECKING:
     from modules.cpu_diag import CPUDiagnostic
@@ -57,6 +58,8 @@ class SnapshotSummary:
     ram_usage_text: str
     gpu_status_text: str
     disk_status_text: str
+    net_down_text: str = "0 B/s"
+    net_up_text: str = "0 B/s"
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,7 @@ class DiagnosticSnapshot:
     diagnostic_report: DiagnosticReport
     summary: SnapshotSummary
     health_summary: HealthSummary
+    net_rate: NetworkRate = field(default_factory=NetworkRate)
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,7 @@ class FastSnapshot:
     gpu_devices: list[GPUDevice]
     disk_partitions: list[DiskPartition]
     summary: SnapshotSummary
+    net_rate: NetworkRate = field(default_factory=NetworkRate)
 
 
 @dataclass(frozen=True)
@@ -909,6 +914,8 @@ class LiveSnapshotCollector:
             system_form_factor_mod = SystemFormFactorDiagnostic()
         self.system_form_factor_mod = system_form_factor_mod
         self.health_analyzer = health_analyzer or HealthAnalyzer()
+        # Live up/down throughput meter — sampled once per fast tick.
+        self.network_speed_meter = NetworkSpeedMeter()
 
     @staticmethod
     def empty_deep() -> DeepSnapshot:
@@ -926,6 +933,7 @@ class LiveSnapshotCollector:
         memory_stats = self.ram_mod.get_ram_stats()
         gpu_devices = self.gpu_mod.get_gpu_devices()
         disk_partitions = self.disk_mod.get_disk_partitions()
+        net_rate = self.network_speed_meter.sample()
 
         summary = SnapshotSummary(
             cpu_usage_text=f"{cpu_load}%",
@@ -937,6 +945,8 @@ class LiveSnapshotCollector:
                 "Partitions",
                 "No Partitions Found",
             ),
+            net_down_text=net_rate.download_text,
+            net_up_text=net_rate.upload_text,
         )
         return FastSnapshot(
             cpu_load=cpu_load,
@@ -945,6 +955,7 @@ class LiveSnapshotCollector:
             gpu_devices=gpu_devices,
             disk_partitions=disk_partitions,
             summary=summary,
+            net_rate=net_rate,
         )
 
     def collect_deep(self) -> DeepSnapshot:
@@ -1070,6 +1081,7 @@ class LiveSnapshotCollector:
             diagnostic_report=diagnostic_report,
             summary=fast.summary,
             health_summary=health_summary,
+            net_rate=fast.net_rate,
         )
 
     def collect(self) -> DiagnosticSnapshot:

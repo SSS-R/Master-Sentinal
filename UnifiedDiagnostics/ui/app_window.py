@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
 import threading
 import webbrowser
 from datetime import datetime, timezone
@@ -44,12 +45,14 @@ from services.live_snapshot import (
     StartupServiceDiagnostic,
     WindowsUpdateDiagnostic as LiveWindowsUpdateDiagnostic,
 )
+from services.live_meters import SpeedTester
+from services.post_reboot_results import PostRebootResultReader
 from services.report_exporter import write_csv_report, write_html_report, write_json_report
 from services.snapshot_history import SnapshotHistory
 from services.monitoring_alerts import MonitoringAlerts, AlertSeverity
 from services.scan_presets import ScanPresetService, ScanPreset
 from services.issue_bundle import IssueBundleExporter
-from ui.components import InfoRow, MetricCard, SectionFrame
+from ui.components import InfoRow, LiveChart, MetricCard, SectionFrame
 
 
 # Navigation items (order matters — rendered top to bottom)
@@ -135,6 +138,9 @@ class App(ctk.CTk):
         self.scan_preset_service = ScanPresetService(self.full_scan_mod)
         self.issue_bundle_exporter = IssueBundleExporter()
         self.scan_service = FullScanService(self.full_scan_mod)
+        # On-demand internet speed test + post-reboot result reader (memory test).
+        self.speed_tester = SpeedTester()
+        self.post_reboot_reader = PostRebootResultReader()
         self.scan_logs: list[dict[str, str]] = []
         self.last_scan_started_at: datetime | None = None
         self.last_scan_finished_at: datetime | None = None
@@ -142,6 +148,14 @@ class App(ctk.CTk):
         self._active_scan_started_at = 0.0
         self._background_threads: list[threading.Thread] = []
         self._refresh_in_progress: dict[str, bool] = {}
+        # Global shutdown event (gates UI callbacks). Created before any tab
+        # setup so early background work (e.g. the memory-result check) can use
+        # _safe_after safely; the monitor threads that observe it start later.
+        self._stop_event = threading.Event()
+        # Cancels an in-progress health scan without touching the global
+        # shutdown event (which would also stop live monitoring).
+        self._scan_cancel_event = threading.Event()
+        self._speed_test_running = False
         # Cache of the expensive PowerShell/WMI diagnostics. Starts empty and is
         # filled by the deep-collect loop; the fast loop reuses it every tick so
         # the live UI never blocks on PowerShell.
@@ -159,6 +173,10 @@ class App(ctk.CTk):
         self.health_summary_var = ctk.StringVar(value="Analyzing live system health...")
         self.scan_progress_var = ctk.StringVar(value="Ready to scan")
         self.scan_duration_var = ctk.StringVar(value="No scan run yet")
+        self.net_down_var = ctk.StringVar(value="0 B/s")
+        self.net_up_var = ctk.StringVar(value="0 B/s")
+        self.speedtest_var = ctk.StringVar(value="Run a speed test to measure your connection.")
+        self.mem_result_var = ctk.StringVar(value="No memory test results loaded yet.")
 
         # Build each tab's UI
         self.setup_dashboard()
@@ -179,7 +197,6 @@ class App(ctk.CTk):
         # Monitoring threads (use Event for clean shutdown).
         # Fast loop: cheap psutil metrics every UPDATE_INTERVAL_SEC.
         # Deep loop: expensive PowerShell/WMI diagnostics on a slow cadence.
-        self._stop_event = threading.Event()
         self.monitor_thread = self._start_background_thread(self._monitor_loop)
         self.deep_monitor_thread = self._start_background_thread(self._deep_monitor_loop)
 
@@ -258,6 +275,8 @@ class App(ctk.CTk):
             ("RAM Usage", self.ram_usage_var),
             ("GPU Status", self.gpu_count_var),
             ("Disks Found", self.disk_count_var),
+            ("Network ↓ Download", self.net_down_var),
+            ("Network ↑ Upload", self.net_up_var),
         ]
         for index, (title, value_var) in enumerate(cards):
             card = MetricCard(grid, title, value_var)
@@ -303,6 +322,25 @@ class App(ctk.CTk):
         for k, v in self._last_cpu_info.as_rows().items():
             self.cpu_static_frame.add_row(k, str(v))
 
+        # Live chart with a histogram (per-thread) ⇄ line (overall history) toggle.
+        chart_header = ctk.CTkFrame(cf, fg_color="transparent")
+        chart_header.pack(fill="x", padx=20, pady=(20, 6))
+
+        self.cpu_chart_title_var = ctk.StringVar(value="Per-Thread Usage (Histogram)")
+        ctk.CTkLabel(
+            chart_header, textvariable=self.cpu_chart_title_var,
+            font=("Roboto", 16, "bold"),
+        ).pack(side="left")
+
+        self.cpu_chart_toggle_btn = ctk.CTkButton(
+            chart_header, text="Switch to Line Graph", width=170, height=30,
+            command=self._toggle_cpu_chart,
+        )
+        self.cpu_chart_toggle_btn.pack(side="right")
+
+        self.cpu_chart = LiveChart(cf, height=180, mode="bars")
+        self.cpu_chart.pack(fill="x", padx=20, pady=(0, 10))
+
         self.cpu_realtime_label = ctk.CTkLabel(
             cf, text="Real-time Usage per Thread",
             font=("Roboto", 16, "bold"),
@@ -315,7 +353,16 @@ class App(ctk.CTk):
 
     def setup_memory_ui(self) -> None:
         """Prepare the Memory section (populated by the monitor loop)."""
-        self.memory_info_frame = SectionFrame(self.frames["Memory"], "Memory Statistics")
+        mf = self.frames["Memory"]
+
+        ctk.CTkLabel(
+            mf, text="Real-time RAM Usage (%)", font=("Roboto", 16, "bold"),
+        ).pack(pady=(20, 6), padx=20, anchor="w")
+
+        self.ram_chart = LiveChart(mf, height=160, mode="line")
+        self.ram_chart.pack(fill="x", padx=20, pady=(0, 10))
+
+        self.memory_info_frame = SectionFrame(mf, "Memory Statistics")
         self.memory_info_frame.pack(fill="x", padx=20, pady=10)
         self._set_empty_state(self.memory_info_frame.content, "Waiting for the first memory snapshot...")
 
@@ -384,6 +431,28 @@ class App(ctk.CTk):
             anchor="w",
         )
         hint.pack(anchor="w", padx=20, pady=(0, 20))
+
+        # Live throughput + on-demand speed test.
+        speed_frame = SectionFrame(sf, "Internet Speed")
+        speed_frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        live_row = ctk.CTkFrame(speed_frame.content, fg_color="transparent")
+        live_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(live_row, text="Live throughput:", text_color="gray60").pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(live_row, text="↓", font=("Roboto", 14, "bold")).pack(side="left")
+        ctk.CTkLabel(live_row, textvariable=self.net_down_var, font=("Roboto", 14, "bold")).pack(side="left", padx=(2, 16))
+        ctk.CTkLabel(live_row, text="↑", font=("Roboto", 14, "bold")).pack(side="left")
+        ctk.CTkLabel(live_row, textvariable=self.net_up_var, font=("Roboto", 14, "bold")).pack(side="left", padx=(2, 0))
+
+        self.speed_test_btn = ctk.CTkButton(
+            speed_frame.content, text="Run Speed Test", height=36,
+            command=self._run_speed_test,
+        )
+        self.speed_test_btn.pack(fill="x", pady=(4, 6))
+        ctk.CTkLabel(
+            speed_frame.content, textvariable=self.speedtest_var,
+            text_color="gray70", anchor="w", justify="left", wraplength=820,
+        ).pack(fill="x")
 
         self.network_container = ctk.CTkFrame(sf, fg_color="transparent")
         self.network_container.pack(fill="both", expand=True, padx=20, pady=10)
@@ -560,6 +629,51 @@ class App(ctk.CTk):
         except Exception as e:
             LOGGER.warning("Failed to open URL %s: %s", url, e)
 
+    @staticmethod
+    def _executable_path_from_command(command: str) -> str:
+        """Extract the executable path from a startup command string.
+
+        Startup commands may be quoted and carry arguments, e.g.
+        ``"C:\\Program Files\\App\\app.exe" --minimized``. Return just the
+        executable path, with surrounding quotes and trailing args removed.
+        """
+        command = (command or "").strip()
+        if not command:
+            return ""
+        if command.startswith('"'):
+            end = command.find('"', 1)
+            return command[1:end] if end != -1 else command.strip('"')
+        # Unquoted: cut at the first ".exe" boundary if present, else first space.
+        lowered = command.lower()
+        exe_index = lowered.find(".exe")
+        if exe_index != -1:
+            return command[: exe_index + 4]
+        return command.split(" ", 1)[0]
+
+    def _open_file_location(self, command: str) -> None:
+        """Open Explorer at a startup item's executable, selecting the file."""
+        path = self._executable_path_from_command(command)
+        if not path:
+            messagebox.showinfo("No Location", "This startup item has no file path to open.")
+            return
+        try:
+            if os.path.isfile(path):
+                # /select, highlights the file inside its folder.
+                subprocess.run(["explorer", "/select,", path])
+                return
+            folder = os.path.dirname(path)
+            if folder and os.path.isdir(folder):
+                os.startfile(folder)  # type: ignore[attr-defined]
+                return
+            messagebox.showwarning(
+                "Location Not Found",
+                f"Could not find this file on disk:\n\n{path}\n\n"
+                "The startup entry may point to a removed or renamed program.",
+            )
+        except Exception as e:
+            LOGGER.warning("Failed to open file location for %s: %s", path, e)
+            messagebox.showerror("Open Location Failed", str(e))
+
     def setup_full_scan_ui(self) -> None:
         """Build the Full Scan results table and Start button."""
         ff = self.frames[NAV_SCAN_ITEM]
@@ -601,11 +715,29 @@ class App(ctk.CTk):
         )
         self.preset_description_label.pack(fill="x", padx=20, pady=(0, 20))
 
+        button_row = ctk.CTkFrame(self.fs_container, fg_color="transparent")
+        button_row.pack(fill="x", pady=(0, 12))
+
         self.start_scan_btn = ctk.CTkButton(
-            self.fs_container, text="Start Health Scan",
+            button_row, text="Start Health Scan",
             command=self.start_full_scan, font=("Roboto", 16), height=40,
         )
-        self.start_scan_btn.pack(fill="x", pady=(0, 20))
+        self.start_scan_btn.pack(side="left", fill="x", expand=True)
+
+        # Appears enabled only while a scan is running — cancels it (and
+        # terminates the in-flight Windows tool) without killing live monitoring.
+        self.stop_scan_btn = ctk.CTkButton(
+            button_row, text="Stop Scan",
+            command=self._stop_full_scan, font=("Roboto", 16), height=40,
+            width=140, fg_color="#b03a2e", hover_color="#922d24",
+            state="disabled",
+        )
+        self.stop_scan_btn.pack(side="right", padx=(10, 0))
+
+        # Determinate progress bar that fills as checks complete.
+        self.scan_progress_bar = ctk.CTkProgressBar(self.fs_container, height=14)
+        self.scan_progress_bar.set(0)
+        self.scan_progress_bar.pack(fill="x", pady=(0, 12))
 
         progress_row = ctk.CTkFrame(self.fs_container, fg_color="transparent")
         progress_row.pack(fill="x", pady=(0, 12))
@@ -741,6 +873,35 @@ class App(ctk.CTk):
             self.advanced_scan_rows[task.name] = status_label
             self.advanced_scan_buttons[task.name] = button
 
+        # Results for scans that only finish after a restart (Memory Diagnostic).
+        # Windows writes these to the Event Log during boot, so we read them back
+        # here instead of leaving the user with no visible outcome.
+        results_section = SectionFrame(self.fs_container, "Restart-Required Scan Results")
+        results_section.pack(fill="x", pady=(10, 10))
+
+        ctk.CTkLabel(
+            results_section.content,
+            text=(
+                "The Windows Memory Diagnostic runs during a restart and reports its "
+                "result afterwards. Click below after rebooting to see the outcome."
+            ),
+            text_color="gray70", anchor="w", justify="left", wraplength=820,
+        ).pack(fill="x", pady=(0, 8))
+
+        ctk.CTkLabel(
+            results_section.content, textvariable=self.mem_result_var,
+            font=("Roboto", 14, "bold"), anchor="w", justify="left", wraplength=820,
+        ).pack(fill="x", pady=(0, 8))
+
+        self.mem_result_btn = ctk.CTkButton(
+            results_section.content, text="Check Memory Test Result", height=36,
+            command=self._refresh_memory_result,
+        )
+        self.mem_result_btn.pack(fill="x")
+
+        # Surface any existing result automatically on first load.
+        self._refresh_memory_result()
+
     # ------------------------------------------------------------------
     # Full Scan
     # ------------------------------------------------------------------
@@ -791,7 +952,10 @@ class App(ctk.CTk):
                 self.scan_progress_var.set("Scan cancelled")
                 return
 
+        self._scan_cancel_event.clear()
         self.start_scan_btn.configure(state="disabled", text="Scanning...")
+        self.stop_scan_btn.configure(state="normal")
+        self.scan_progress_bar.set(0)
         self.scan_logs = []
         self.last_scan_started_at = datetime.now(timezone.utc)
         self.last_scan_finished_at = None
@@ -838,8 +1002,13 @@ class App(ctk.CTk):
     ) -> None:
         """Execute a group of checks sequentially in a background thread."""
         total = len(tasks)
+        completed = 0
+        cancelled = False
         for index, task in enumerate(tasks, start=1):
             if self._stop_event.is_set():
+                return
+            if self._scan_cancel_event.is_set():
+                cancelled = True
                 break
             self._ui_scan_progress(index - 1, total, "Running")
             self._ui_scan_status(row_map, task.name, "Running...", "orange")
@@ -848,26 +1017,100 @@ class App(ctk.CTk):
                 success, output = task.runner()
             except Exception as exc:
                 self._finalize_scan_status(row_map, ScanResult.from_exception(task.name, exc), perf_counter() - started)
+                completed = index
+                self._ui_scan_progress(index, total, "Running")
                 continue
+
+            # A cancel during a long check terminates the tool; report it as such
+            # rather than as a genuine failure.
+            if self._scan_cancel_event.is_set():
+                self._ui_scan_status(row_map, task.name, "Stopped", "gray")
+                cancelled = True
+                break
 
             self._finalize_scan_status(
                 row_map,
                 ScanResult.from_runner_output(task.name, success, output),
                 perf_counter() - started,
             )
+            completed = index
             self._ui_scan_progress(index, total, "Running")
 
         if self._stop_event.is_set():
             return
+
         self.last_scan_finished_at = datetime.now(timezone.utc)
         elapsed = perf_counter() - self._active_scan_started_at
+        self._safe_after(lambda: trigger_button.configure(state="normal", text=idle_text))
+        self._safe_after(lambda: self.stop_scan_btn.configure(state="disabled"))
+
+        if cancelled:
+            done = completed
+            self._safe_after(lambda: self.scan_progress_var.set(f"Scan stopped after {done} of {total} checks"))
+            self._safe_after(lambda: self.scan_duration_var.set(f"Stopped at {elapsed:.1f}s"))
+            return
+
         self._safe_after(lambda: self.scan_progress_var.set(f"Finished {total} of {total} checks"))
         self._safe_after(lambda: self.scan_duration_var.set(f"Completed in {elapsed:.1f}s"))
-        self._safe_after(lambda: trigger_button.configure(state="normal", text=idle_text))
         # Turn the scan into a friendly, shareable Master Sentinal report and open
         # it automatically, instead of leaving the user to hunt for Windows' raw
         # technical files.
         self._safe_after(self._generate_scan_report)
+
+    def _stop_full_scan(self) -> None:
+        """Request cancellation of the running scan and kill the active tool."""
+        self._scan_cancel_event.set()
+        self.stop_scan_btn.configure(state="disabled", text="Stopping...")
+        self.scan_progress_var.set("Stopping scan - waiting for the current check to halt...")
+        # Terminate the in-flight Windows tool (SFC/DISM/CHKDSK) so the scan
+        # stops promptly instead of waiting minutes for it to finish.
+        self._start_background_thread(self.full_scan_mod.terminate_current)
+        self._safe_after(lambda: self.stop_scan_btn.configure(text="Stop Scan"))
+
+    # ------------------------------------------------------------------
+    # Live charts, network speed, and post-reboot results
+    # ------------------------------------------------------------------
+
+    def _toggle_cpu_chart(self) -> None:
+        """Flip the CPU chart between per-thread histogram and line history."""
+        mode = self.cpu_chart.toggle_mode()
+        if mode == "bars":
+            self.cpu_chart_title_var.set("Per-Thread Usage (Histogram)")
+            self.cpu_chart_toggle_btn.configure(text="Switch to Line Graph")
+        else:
+            self.cpu_chart_title_var.set("Overall CPU Usage (Line)")
+            self.cpu_chart_toggle_btn.configure(text="Switch to Histogram")
+
+    def _run_speed_test(self) -> None:
+        """Run an on-demand internet capacity test on a background thread."""
+        if self._speed_test_running:
+            return
+        self._speed_test_running = True
+        self.speed_test_btn.configure(state="disabled", text="Testing...")
+        self.speedtest_var.set("Running speed test - this takes about 15-30 seconds...")
+
+        def _work() -> None:
+            result = self.speed_tester.run()
+            self._speed_test_running = False
+            self._safe_after(lambda: self.speedtest_var.set(result.summary))
+            self._safe_after(lambda: self.speed_test_btn.configure(state="normal", text="Run Speed Test"))
+
+        self._start_background_thread(_work)
+
+    def _refresh_memory_result(self) -> None:
+        """Read the latest Windows Memory Diagnostic result from the Event Log."""
+        self.mem_result_btn.configure(state="disabled", text="Checking...")
+        self.mem_result_var.set("Reading memory test results from the Windows Event Log...")
+
+        def _work() -> None:
+            result = self.post_reboot_reader.get_memory_diagnostic_result()
+            text = result.headline
+            if result.found and result.time_created:
+                text = f"{text}\n(Recorded: {result.time_created})"
+            self._safe_after(lambda: self.mem_result_var.set(text))
+            self._safe_after(lambda: self.mem_result_btn.configure(state="normal", text="Check Memory Test Result"))
+
+        self._start_background_thread(_work)
 
     def _run_single_task(self, task: ScanTask) -> None:
         """Execute one advanced task in a background thread."""
@@ -927,10 +1170,12 @@ class App(ctk.CTk):
             LOGGER.warning("%s", result.log_message or f"[{result.task_name}] FAILED: {result.message}")
 
     def _ui_scan_progress(self, completed: int, total: int, prefix: str) -> None:
-        """Thread-safe helper to update batch scan progress."""
+        """Thread-safe helper to update batch scan progress (text + bar)."""
         elapsed = perf_counter() - self._active_scan_started_at
+        fraction = (completed / total) if total else 0.0
         self._safe_after(lambda: self.scan_progress_var.set(f"{prefix} {completed} of {total} checks"))
         self._safe_after(lambda: self.scan_duration_var.set(f"Elapsed {elapsed:.1f}s"))
+        self._safe_after(lambda: self.scan_progress_bar.set(fraction))
 
     def _ui_scan_status(
         self,
@@ -1028,6 +1273,13 @@ class App(ctk.CTk):
         self.ram_usage_var.set(snapshot.summary.ram_usage_text)
         self.gpu_count_var.set(snapshot.summary.gpu_status_text)
         self.disk_count_var.set(snapshot.summary.disk_status_text)
+        self.net_down_var.set(snapshot.summary.net_down_text)
+        self.net_up_var.set(snapshot.summary.net_up_text)
+
+        # Live charts: CPU (per-thread histogram + overall line) and RAM line.
+        self.cpu_chart.update_values(snapshot.per_core, overall=snapshot.cpu_load)
+        ram_pct = float(getattr(snapshot.memory_stats, "percent_used", 0) or 0)
+        self.ram_chart.update_values([ram_pct], overall=ram_pct)
 
         self._last_gpu_devices = snapshot.gpu_devices
         self._last_disk_partitions = snapshot.disk_partitions
@@ -1443,6 +1695,15 @@ class App(ctk.CTk):
                 item_frame.add_row("Location", item.location)
                 item_frame.add_row("Enabled", str(item.enabled))
                 item_frame.add_row("Impact", item.impact_text)
+
+                # Open the app's actual folder in Explorer — helps users spot
+                # unknown or suspicious programs running from odd locations.
+                ctk.CTkButton(
+                    item_frame.content,
+                    text="📂 Open File Location",
+                    height=30, width=180,
+                    command=lambda cmd=item.command: self._open_file_location(cmd),
+                ).pack(anchor="w", pady=(4, 2), padx=5)
 
         # Slow services
         if health.slow_startup_services:

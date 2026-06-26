@@ -69,7 +69,7 @@ class TestFullScanChecks:
         assert "Administrator" in msg
 
     @patch.object(FullScanDiagnostic, 'is_admin', return_value=True)
-    @patch("subprocess.run")
+    @patch.object(FullScanDiagnostic, '_run_shell_command')
     def test_sfc_no_violations(self, mock_run, _):
         mock_run.return_value = MagicMock(
             returncode=0,
@@ -81,14 +81,14 @@ class TestFullScanChecks:
         assert "No Integrity Violations" in msg
 
     @patch.object(FullScanDiagnostic, 'is_admin', return_value=True)
-    @patch("subprocess.run")
+    @patch.object(FullScanDiagnostic, '_run_shell_command')
     def test_dism_success(self, mock_run, _):
         mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         ok, msg = self.diag.run_dism()
         assert ok
 
     @patch.object(FullScanDiagnostic, 'is_admin', return_value=True)
-    @patch("subprocess.run")
+    @patch.object(FullScanDiagnostic, '_run_shell_command')
     def test_dism_timeout_returns_friendly_message(self, mock_run, _):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="DISM", timeout=2400)
         ok, msg = self.diag.run_dism()
@@ -102,3 +102,13 @@ class TestFullScanChecks:
             assert isinstance(name, str)
             assert callable(func)
             assert isinstance(reboot, bool)
+
+    def test_terminate_current_is_noop_when_idle(self):
+        # No scan running: terminate_current must do nothing and not raise.
+        assert self.diag._current_proc is None
+        self.diag.terminate_current()
+
+    @patch.object(FullScanDiagnostic, 'is_admin', return_value=True)
+    def test_access_denied_message_mentions_admin_or_lock(self, _):
+        msg = self.diag._parse_friendly_error("Access is denied")
+        assert "Access Denied" in msg

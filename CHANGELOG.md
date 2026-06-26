@@ -5,6 +5,39 @@ All notable changes to Master Sentinal will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-26
+
+### Added
+- **Live scan progress bar.** The health scan now shows a real progress bar that
+  fills as each check completes, alongside the existing status text.
+- **Stop Scan button.** A scan can be cancelled mid-run. The button terminates
+  the in-flight Windows tool (SFC/DISM/CHKDSK and their child processes) so the
+  scan halts promptly instead of blocking for minutes — without interrupting
+  live monitoring.
+- **Live internet speed.** The dashboard and Network tab show real-time up/down
+  throughput (like Task Manager). A new **Run Speed Test** button on the Network
+  tab measures actual download/upload capacity (Mbps) on demand using
+  Cloudflare's speed endpoints — no extra dependency, no account required.
+- **Live CPU & RAM charts.** The CPU tab has a live chart that toggles between a
+  per-thread **histogram** and an **overall line graph**; the Memory tab shows a
+  live RAM-usage line graph. Drawn on a canvas with no new dependencies.
+- **Open startup app location.** Each startup program now has an **Open File
+  Location** button that reveals the executable in File Explorer — making it easy
+  to spot unknown or suspicious apps running from unusual folders.
+- **Post-restart scan results.** Scans that finish during a reboot (Windows
+  Memory Diagnostic) no longer vanish without a trace. The Full Scan screen reads
+  the result back from the Windows Event Log and shows it in plain language
+  ("Last memory test: no errors detected"), automatically on launch and via a
+  **Check Memory Test Result** button.
+
+### Fixed
+- **Misleading "access denied" guidance.** Storage and other checks that hit a
+  Windows access-denied error used to always say "run as administrator" — even
+  when the app was *already* elevated. Messages are now elevation-aware: when
+  already running as admin, they correctly explain the resource is locked or
+  unavailable rather than under-privileged. Disk Check also reports drive-lock
+  situations clearly and suggests a restart-time check.
+
 ## [1.2.0] - 2026-06-26
 
 ### Fixed

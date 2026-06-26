@@ -13,6 +13,33 @@ def _creation_flags() -> int:
     return 0
 
 
+def _is_admin() -> bool:
+    """Return True if the current process is elevated (best effort)."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _access_denied_message(action: str) -> str:
+    """Return an accurate access-denied message based on elevation state.
+
+    Telling an already-elevated user to "run as administrator" is misleading
+    (a real complaint): when we are already admin, the resource is locked or
+    simply not exposed by Windows, not under-privileged.
+    """
+    if _is_admin():
+        return (
+            f"{action} was blocked by Windows even with administrator rights - "
+            "the resource is locked or not available on this system."
+        )
+    return f"{action} was denied by Windows. Try running the app as administrator."
+
+
 def run_powershell(script: str, timeout: int) -> subprocess.CompletedProcess[str]:
     """Run a PowerShell script and capture UTF-8 output reliably.
 
@@ -52,12 +79,12 @@ def friendly_exception_message(exc: Exception, action: str) -> str:
     if isinstance(exc, FileNotFoundError):
         return f"{action} could not start because a required command or component was not found."
     if isinstance(exc, PermissionError):
-        return f"{action} was denied by Windows. Try running the app as administrator."
+        return _access_denied_message(action)
 
     message = str(exc).strip()
     lowered = message.lower()
     if "access is denied" in lowered:
-        return f"{action} was denied by Windows. Try running the app as administrator."
+        return _access_denied_message(action)
     if "invalid class" in lowered or "not found" in lowered and "wmi" in lowered:
         return f"{action} is unavailable because Windows management data is missing."
     if "rpc server is unavailable" in lowered:
