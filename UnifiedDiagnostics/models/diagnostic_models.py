@@ -321,6 +321,8 @@ class PhysicalDriveHealth:
     operational_status: str = "Unknown"
     size_text: str = ""
     temperature_c: float | None = None
+    wear: float | None = None
+    read_errors_uncorrected: int | None = None
 
     @property
     def is_warning(self) -> bool:
@@ -330,7 +332,9 @@ class PhysicalDriveHealth:
         unhealthy = health not in {"", "healthy", "ok", "unknown"}
         not_ready = operational not in {"", "ok", "unknown", "in service"}
         hot = self.temperature_c is not None and self.temperature_c >= 55
-        return unhealthy or not_ready or hot
+        high_wear = self.wear is not None and self.wear >= 80
+        errors = self.read_errors_uncorrected is not None and self.read_errors_uncorrected > 0
+        return unhealthy or not_ready or hot or high_wear or errors
 
 
 @dataclass(frozen=True)

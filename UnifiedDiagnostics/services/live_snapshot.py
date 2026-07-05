@@ -452,6 +452,8 @@ class StorageHealthDiagnostic:
                     operational_status=self._text(drive.get("OperationalStatus")) or "Unknown",
                     size_text=self._text(drive.get("SizeText")),
                     temperature_c=self._float_or_none(drive.get("TemperatureC")),
+                    wear=self._float_or_none(drive.get("Wear")),
+                    read_errors_uncorrected=self._int_or_none(drive.get("ReadErrorsUncorrected")),
                 )
                 for drive in payload.get("Drives", [])
             ]
@@ -476,16 +478,29 @@ class StorageHealthDiagnostic:
             return None
 
     @staticmethod
+    def _int_or_none(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _powershell_script() -> str:
         return (
             "$ErrorActionPreference = 'Stop'\n"
             "$drives = @(Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {\n"
             "    $disk = $_\n"
             "    $temp = $null\n"
+            "    $wear = $null\n"
+            "    $reuc = $null\n"
             "    try {\n"
             "        $counter = Get-StorageReliabilityCounter -PhysicalDisk $disk -ErrorAction SilentlyContinue\n"
             "        if ($counter -and $counter.Temperature) { $temp = $counter.Temperature }\n"
-            "    } catch { $temp = $null }\n"
+            "        if ($counter -and $null -ne $counter.Wear) { $wear = $counter.Wear }\n"
+            "        if ($counter -and $null -ne $counter.ReadErrorsUncorrected) { $reuc = $counter.ReadErrorsUncorrected }\n"
+            "    } catch { $temp = $null; $wear = $null; $reuc = $null }\n"
             "    [pscustomobject]@{\n"
             "        FriendlyName = $disk.FriendlyName\n"
             "        MediaType = $disk.MediaType\n"
@@ -494,6 +509,8 @@ class StorageHealthDiagnostic:
             "        OperationalStatus = ($disk.OperationalStatus -join ', ')\n"
             "        SizeText = if ($disk.Size) { '{0:N2} GB' -f ($disk.Size / 1GB) } else { '' }\n"
             "        TemperatureC = $temp\n"
+            "        Wear = $wear\n"
+            "        ReadErrorsUncorrected = $reuc\n"
             "    }\n"
             "})\n"
             "[pscustomobject]@{ Drives = $drives } | ConvertTo-Json -Depth 4 -Compress\n"
@@ -1118,7 +1135,7 @@ class LiveSnapshotCollector:
                 issues.append(DiagnosticIssue(source="Disk", category="collection", message=partition.error_message or "Unknown error"))
         for smart_drive in smart_drives:
             if smart_drive.is_error:
-                issues.append(DiagnosticIssue(source="SMART", category="collection", message=smart_drive.error_message or "Unknown error"))
+                issues.append(DiagnosticIssue(source="Drive Status", category="collection", message=smart_drive.error_message or "Unknown error"))
 
         if not include_deep:
             return DiagnosticReport(issues=issues)

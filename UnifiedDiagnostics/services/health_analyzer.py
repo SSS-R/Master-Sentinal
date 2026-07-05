@@ -148,7 +148,7 @@ class HealthAnalyzer:
             if smart_drive.is_error:
                 findings.append(
                     HealthFinding(
-                        title="SMART diagnostics unavailable",
+                        title="Drive Status diagnostics unavailable",
                         message=smart_drive.error_message or "Unknown error",
                         severity="warning",
                     )
@@ -337,7 +337,7 @@ class HealthAnalyzer:
             if "pred fail" in normalized or "fail" in normalized:
                 findings.append(
                     HealthFinding(
-                        title="SMART reported a drive failure risk",
+                        title="Windows reported a drive failure risk",
                         message=value,
                         severity="critical",
                     )
@@ -345,7 +345,7 @@ class HealthAnalyzer:
             elif "caution" in normalized or "warning" in normalized:
                 findings.append(
                     HealthFinding(
-                        title="SMART reported a drive warning",
+                        title="Windows reported a drive warning",
                         message=value,
                         severity="warning",
                     )
@@ -490,6 +490,7 @@ class HealthAnalyzer:
         findings: list[HealthFinding] = []
         for drive in health.warning_drives():
             label = drive.friendly_name or "Physical drive"
+            specific_issue = False
             if drive.temperature_c is not None and drive.temperature_c >= 65:
                 findings.append(
                     HealthFinding(
@@ -498,8 +499,8 @@ class HealthAnalyzer:
                         severity="critical",
                     )
                 )
-                continue
-            if drive.temperature_c is not None and drive.temperature_c >= 55:
+                specific_issue = True
+            elif drive.temperature_c is not None and drive.temperature_c >= 55:
                 findings.append(
                     HealthFinding(
                         title=f"{label} temperature is elevated",
@@ -507,18 +508,40 @@ class HealthAnalyzer:
                         severity="warning",
                     )
                 )
-                continue
+                specific_issue = True
 
-            findings.append(
-                HealthFinding(
-                    title=f"{label} storage health needs attention",
-                    message=(
-                        f"{label} reports health '{drive.health_status}' and operational status "
-                        f"'{drive.operational_status}'. Media type: {drive.media_type}, bus: {drive.bus_type}."
-                    ),
-                    severity="warning",
+            if drive.read_errors_uncorrected is not None and drive.read_errors_uncorrected > 0:
+                findings.append(
+                    HealthFinding(
+                        title=f"{label} read errors detected",
+                        message=f"{label} has {drive.read_errors_uncorrected} uncorrected read errors. This is a leading indicator of drive failure.",
+                        severity="warning",
+                    )
                 )
-            )
+                specific_issue = True
+                
+            if drive.wear is not None and drive.wear >= 80:
+                severity = "warning" if drive.wear >= 95 else "info"
+                findings.append(
+                    HealthFinding(
+                        title=f"{label} wear level is high",
+                        message=f"{label} reports {int(drive.wear)}% wear. {'Plan for replacement soon.' if drive.wear >= 95 else 'Keep an eye on it.'}",
+                        severity=severity,
+                    )
+                )
+                specific_issue = True
+
+            if not specific_issue:
+                findings.append(
+                    HealthFinding(
+                        title=f"{label} storage health needs attention",
+                        message=(
+                            f"{label} reports health '{drive.health_status}' and operational status "
+                            f"'{drive.operational_status}'. Media type: {drive.media_type}, bus: {drive.bus_type}."
+                        ),
+                        severity="warning",
+                    )
+                )
 
         return findings
 
@@ -778,7 +801,12 @@ class HealthAnalyzer:
         persistent_terms = (
             "almost full",
             "low on free space",
-            "smart",
+            "drive failure risk",
+            "drive warning",
+            "wear level",
+            "read errors",
+            "drive status",
+            "diagnostics unavailable",
             "storage health",
             "windows update",
             "restart pending",

@@ -380,9 +380,17 @@ class App(ctk.CTk):
         self.storage_container.pack(fill="both", expand=True, padx=20, pady=10)
         self._set_empty_state(self.storage_container, "Waiting for the first storage snapshot...")
 
-        self.smart_frame = SectionFrame(sf, "SMART Health Status")
+        self.smart_frame = SectionFrame(sf, "Drive Status (Windows-reported)")
         self.smart_frame.pack(fill="x", padx=20, pady=10)
-        self._set_empty_state(self.smart_frame.content, "Waiting for the first SMART snapshot...")
+        
+        info_label = ctk.CTkLabel(
+            self.smart_frame,
+            text="Windows drive status + temperature — raw SMART attributes not yet read.",
+            text_color="gray70"
+        )
+        info_label.pack(anchor="w", padx=20, pady=(0, 5), before=self.smart_frame.content)
+        
+        self._set_empty_state(self.smart_frame.content, "Waiting for the first Windows status snapshot...")
 
     def setup_security_ui(self) -> None:
         """Build the Security diagnostics section."""
@@ -1412,7 +1420,7 @@ class App(ctk.CTk):
 
         # SMART — flat key→value (no nested dicts), use simpler path
         if not smart_drives:
-            self._set_empty_state(self.smart_frame.content, "No SMART diagnostics are available yet.")
+            self._set_empty_state(self.smart_frame.content, "No Windows status diagnostics are available yet.")
             self.smart_widgets = {}
             return
 

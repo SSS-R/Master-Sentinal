@@ -20,6 +20,8 @@ from models.diagnostic_models import (
     StartupHealth,
     StartupItemStatus,
     SystemFormFactor,
+    StorageHealth,
+    PhysicalDriveHealth,
 )
 from services.health_analyzer import HealthAnalyzer
 
@@ -67,7 +69,7 @@ def test_analyzer_flags_multiple_problem_types():
     assert persistence_by_title["CPU load is extremely high"] == "snapshot"
     assert persistence_by_title["Memory pressure is critical"] == "snapshot"
     assert persistence_by_title["C:\\ is almost full"] == "persistent"
-    assert persistence_by_title["SMART reported a drive failure risk"] == "persistent"
+    assert persistence_by_title["Windows reported a drive failure risk"] == "persistent"
 
 
 def test_analyzer_surfaces_diagnostic_errors_as_warnings():
@@ -172,3 +174,34 @@ def test_analyzer_surfaces_startup_and_service_findings_conservatively():
     assert "Many startup items are enabled" in titles
     assert "Several automatic services are stopped" in titles
     assert all(finding.recommended_action for finding in summary.findings)
+
+def test_analyzer_flags_storage_health_wear_and_read_errors():
+    analyzer = HealthAnalyzer()
+
+    summary = analyzer.analyze(
+        cpu_load=20.0,
+        ram=MemoryStats("16.00 GB", "10.00 GB", "6.00 GB", 35.0),
+        gpus=[],
+        disks=[],
+        smart=[],
+        storage_health=StorageHealth(
+            drives=[
+                PhysicalDriveHealth(friendly_name="Drive1", wear=85, read_errors_uncorrected=0),
+                PhysicalDriveHealth(friendly_name="Drive2", wear=98, read_errors_uncorrected=5),
+            ]
+        )
+    )
+
+    titles = [f.title for f in summary.findings]
+    assert "Drive2 read errors detected" in titles
+    assert "Drive2 wear level is high" in titles
+    assert "Drive1 wear level is high" in titles
+    
+    drive1_finding = next(f for f in summary.findings if f.title == "Drive1 wear level is high")
+    assert drive1_finding.severity == "info"
+    
+    drive2_wear_finding = next(f for f in summary.findings if f.title == "Drive2 wear level is high")
+    assert drive2_wear_finding.severity == "warning"
+    
+    drive2_err_finding = next(f for f in summary.findings if f.title == "Drive2 read errors detected")
+    assert drive2_err_finding.severity == "warning"

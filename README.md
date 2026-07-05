@@ -99,9 +99,11 @@ Live monitoring runs in two tiers:
 
 - **Fast tier (every ~2 s):** cheap metrics — CPU, RAM, per-core load, disk usage.
 - **Deep tier (startup + background/manual refresh):** the expensive checks —
-  Windows Update, Event Log, Reliability, Network, Storage SMART, Security,
+  Windows Update, Event Log, Reliability, Network, Storage Status, Security,
   Startup impact, and form-factor detection — collected concurrently so total time
   is roughly the slowest single call rather than the sum of all of them.
+
+> **Note on Storage Checks:** The dashboard covers Windows-reported drive health, temperature, read errors, and basic wear levels. Deep SSD analytics (wear history, firmware updates, benchmarks) remain the territory of dedicated vendor tools like Samsung Magician for now.
 
 All PowerShell diagnostics force UTF-8 on both ends so localized (non-English)
 Windows device and event names decode correctly.
